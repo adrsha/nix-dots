@@ -1,0 +1,24 @@
+--- a/src/wayland/keyboard.rs
++++ b/src/wayland/keyboard.rs
+@@ -0,0 +1,2 @@
++use std::cell::Cell;
++thread_local! { static CTRL: Cell<bool> = const { Cell::new(false) }; }
+@@ -37 +39 @@
+-        self.keyboard_focus = None;
++        self.keyboard_focus = None; CTRL.set(false);
+@@ -57 +59 @@
+-        let key = to_key(&event);
++        let key=if CTRL.get(){match event.keysym{Keysym::BackSpace=>Key::Character('\u{17}'),Keysym::Delete|Keysym::KP_Delete=>Key::Character('\u{4}'),Keysym::j=>Key::Character('\u{a}'),Keysym::k=>Key::Character('\u{b}'),_=>to_key(&event)}}else{to_key(&event)};
+@@ -107 +109 @@
+-        _: Modifiers,
++        modifiers: Modifiers,
+@@ -110,2 +112 @@
+-    ) {
+-    }
++    ) { CTRL.set(modifiers.ctrl); }
+@@ -146 +147,4 @@
+-        return Key::Other;
++        return match (event.keysym,letter) {
++            (Keysym::j, '\u{a}') | (Keysym::k, '\u{b}') => Key::Character(letter),
++            _=>Key::Other,
++        };

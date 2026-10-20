@@ -9,15 +9,12 @@
 #         - the shell hooks (`theme` function, sourcing the generated env files)
 #         - the themes directory link
 #         - an optional default theme for a fresh machine
+#         - the dconf/GSettings plumbing that color-scheme needs
 #
 #     RUNTIME STATE (written by theme-set / theme-daemon, never by Nix)
 #         - ~/.local/state/theme/{current,amoled,transparent,active.json}
 #         - the generated files in ~/.config (theme_vars.fish, theme_env.sh,
 #             environment.d/theme-manager.conf, ghostty/kitty/gtk/qt/... files)
-#
-# Your own app configs stay declarative and just *include* the generated
-# files. Switching themes rewrites those files and reloads the apps; Nix is
-# not involved and nothing needs a rebuild.
 #
 # flake.nix needs this input:
 #     theme_manager = { url = "github:adrsha/theme_manager"; flake = false; };
@@ -41,6 +38,25 @@
         src = inputs.theme_manager;
         users = lib.filter (u: u.isNormalUser) (lib.attrValues config.users.users);
         user = (lib.head users).name;
+        home = config.users.users.${user}.home;
+
+        # --- dconf / GSettings plumbing -----------------------------------
+        # Without the dconf GIO module, GLib silently falls back to an
+        # in-memory backend: writes "succeed" but nothing is persisted, so the
+        # portal never sees them. Every process that reads or writes
+        # color-scheme must load this module.
+        dconfModules = "${pkgs.dconf.lib}/lib/gio/modules";
+        # Compiled schemas for org.gnome.desktop.interface (needed by gsettings).
+        schemaDir = "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}";
+
+        # Replays the last palette the daemon wrote onto every VT.
+        ttyPalette = pkgs.writeShellScript "theme-tty-palette" ''
+            f=${lib.escapeShellArg home}/.local/state/theme/tty_colors
+            [ -r "$f" ] || exit 0
+            for t in /dev/tty[1-6]; do
+                { cat "$f" > "$t"; } 2>/dev/null
+            done
+        '';
 
         # Built by Nix instead of `cargo build` at activation time: reproducible,
         # cached, and no network or git needed at boot. Cargo.lock pins the crates.
@@ -51,12 +67,18 @@
             cargoLock.lockFile = "${src}/Cargo.lock";
             doCheck = false;
             nativeBuildInputs = [ pkgs.makeWrapper ];
-            # ffmpeg is needed for MODE=dynamic (palette from the wallpaper).
-            # --suffix keeps the system PATH first, so hyprctl, swaync-client,
-            # systemctl and friends are still found where they normally are.
+            # ffmpeg: MODE=dynamic (palette from the wallpaper).
+            # dconf + glib: gsettings/dconf binaries, which are not on a bare
+            #   NixOS PATH. Suffix keeps the system PATH first.
+            # GIO_EXTRA_MODULES / XDG_DATA_DIRS: make GSettings persist to dconf
+            #   instead of the in-memory fallback, whatever environment the
+            #   binary is started from (terminal, systemd, keybind).
             postInstall = ''
                 for b in theme-set theme-daemon; do
-                    wrapProgram $out/bin/$b --suffix PATH : ${lib.makeBinPath [ pkgs.ffmpeg ]}
+                    wrapProgram $out/bin/$b \
+                        --suffix PATH : ${lib.makeBinPath [ pkgs.ffmpeg pkgs.dconf pkgs.glib ]} \
+                        --set GIO_EXTRA_MODULES ${dconfModules} \
+                        --suffix XDG_DATA_DIRS : ${schemaDir}
                 done
             '';
             meta.mainProgram = "theme-set";
@@ -107,10 +129,36 @@
             message = "theme_manager.nix needs at least one normal user.";
         }];
 
-        environment.systemPackages = [ theme-manager ];
+        environment.systemPackages = [
+            theme-manager
+            pkgs.matugen
+            pkgs.awww
+            # Handy for debugging and manual runs: `dconf read/watch`, `gsettings`.
+            pkgs.dconf
+            pkgs.glib
+        ];
 
-        # theme-set pushes the color scheme through gsettings/dconf.
-        programs.dconf.enable = lib.mkDefault true;
+        # theme-set pushes the color scheme through dconf.
+        programs.dconf = {
+            enable = lib.mkDefault true;
+            profiles.user.databases = [{
+                settings."org/gnome/desktop/interface" = {
+                    gtk-theme = "ThemeManager";
+                    color-scheme = "prefer-dark";
+                };
+            }];
+        };
+
+        # Portal: the thing Firefox actually asks for prefers-color-scheme.
+        # The portal and its gtk backend must load the dconf GIO module too,
+        # or they read an empty in-memory store and report 0 ("no preference").
+        xdg.portal = {
+            enable = true;
+            extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
+            config.common.default = lib.mkDefault [ "gtk" ];
+        };
+        systemd.user.services.xdg-desktop-portal.environment.GIO_EXTRA_MODULES = dconfModules;
+        systemd.user.services.xdg-desktop-portal-gtk.environment.GIO_EXTRA_MODULES = dconfModules;
 
         # Shell hooks. Harmless for shells you don't use.
         # (fish auto-sources ~/.config/fish/conf.d/theme_vars.fish by itself.)
@@ -122,6 +170,26 @@
         '';
         programs.bash.interactiveShellInit = posixInit;
         programs.zsh.interactiveShellInit = posixInit;
+
+        # Repaint the Linux console at login. The daemon handles live theme changes,
+        # but a fresh TTY login after boot starts with the build-time colors.
+        environment.interactiveShellInit = ''
+            if [ "$TERM" = linux ]; then
+                cat "$HOME/.local/state/theme/tty_colors" 2>/dev/null >/dev/tty
+            fi
+        '';
+
+        # Paint the console at boot, before any login prompt is used. Without this,
+        # new TTYs start with the build-time console.colors until a theme is applied.
+        systemd.services.theme-tty = {
+            description = "Apply theme-manager palette to the Linux console";
+            wantedBy = [ "multi-user.target" ];
+            after = [ "systemd-vconsole-setup.service" "local-fs.target" ];
+            serviceConfig = {
+                Type = "oneshot";
+                ExecStart = ttyPalette;
+            };
+        };
 
         # The daemon watches ~/.local/state/theme/current (inotify) and
         # regenerates every config when it changes. This replaces the

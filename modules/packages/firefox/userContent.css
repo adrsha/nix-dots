@@ -1,0 +1,46 @@
+@import url("colors.css");
+
+/* Only internal pages (about:newtab, about:home, about:blank, about:preferences, ...)
+ * are styled, so regular websites are never touched. */
+@-moz-document url-prefix("about:") {
+
+  /* Color layer
+   * Same layer as userChrome.css: reads --tm-* from colors.css and falls back
+   * to the hardcoded value if that file is missing. Edit a line to customize.
+   */
+  :root {
+    --c-deep:      var(--tm-deep,      #131319);
+    --c-bg:        var(--tm-bg,        #20202a);
+    --c-surface:   var(--tm-surface,   #3b3b4d);
+    --c-raised:    var(--tm-raised,    #44495e);
+    --c-hover:     var(--tm-hover,     #51566a);
+    --c-border:    var(--tm-border,    #44495e);
+    --c-fg:        var(--tm-fg,        #e8eaee);
+    --c-dim:       var(--tm-dim,       #c6d0e9);
+    --c-accent:    var(--tm-accent,    #cddbf9);
+    --c-on-accent: var(--tm-on-accent, #20202a);
+    --c-radius:    var(--tm-radius,    16px);
+  }
+
+  /* page background matches the selected tab and sidebar (--c-deep) */
+  :root {
+    color-scheme: dark !important;
+    background-color: var(--c-deep) !important;
+  }
+
+  /* new tab / home page */
+  :root, body {
+    --newtab-background-color: var(--c-deep) !important;
+    --newtab-background-color-secondary: var(--c-surface) !important;
+    --newtab-text-primary-color: var(--c-fg) !important;
+    --newtab-primary-action-background: var(--c-accent) !important;
+  }
+
+  /* settings and other in-content pages (name changed between Firefox versions) */
+  :root {
+    --in-content-page-background: var(--c-deep) !important;
+    --background-color-canvas: var(--c-deep) !important;
+    --in-content-page-color: var(--c-fg) !important;
+    --text-color: var(--c-fg) !important;
+  }
+}

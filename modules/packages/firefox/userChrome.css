@@ -1,0 +1,878 @@
+@import url("colors.css");
+
+/* Color layer
+ * Every color below reads the matching --tm-* value from colors.css and falls
+ * back to the hardcoded value if that file is missing. To customize, edit a
+ * line here (e.g. --c-accent: #ff8800;). The rest of the file only uses --c-*.
+ */
+:root {
+  --c-deep:      var(--tm-deep,      #131319);
+  --c-bg:        var(--tm-bg,        #20202a);
+  --c-surface:   var(--tm-surface,   #3b3b4d);
+  --c-raised:    var(--tm-raised,    #44495e);
+  --c-hover:     var(--tm-hover,     #51566a);
+  --c-border:    var(--tm-border,    #44495e);
+  --c-fg:        var(--tm-fg,        #e8eaee);
+  --c-dim:       var(--tm-dim,       #c6d0e9);
+  --c-accent:    var(--tm-accent,    #cddbf9);
+  --c-on-accent: var(--tm-on-accent, #20202a);
+  --c-radius:    var(--tm-radius,    16px);
+}
+
+/*  ,-----. ,-----. ,--.  ,--.,------.,--. ,----.    
+ * '  .--./'  .-.  '|  ,'.|  ||  .---'|  |'  .-./    
+ * |  |    |  | |  ||  |' '  ||  `--, |  ||  | .---. 
+ * '  '--'\'  '-'  '|  | `   ||  |`   |  |'  '--'  | 
+ *  `-----' `-----' `--'  `--'`--'    `--' `------'  
+ */
+
+:root {
+  /* Navigation Bar Width*/
+  --navbar-width: max(35vw, 500px);
+
+  /* URL Bar Open Width
+   * Applied when the URL bar is open.
+   * Set to auto to keep width unchanged.
+   */
+  --urlbar-open-width: max(60vw, 800px);
+
+  /* Dynamic Tab Width */
+  --active-tab-width: clamp(100px, 24vw, 240px);    
+  --inactive-tab-width: clamp(100px, 18vw, 180px);
+
+  /* Dynamic Toolbar Buttons Hover Delay
+   * Hover hamburger menu to reveal additional toolbar buttons.
+   */
+  --dynamic-buttons-hover-delay: 450ms;
+
+  /* Dynamic Bookmarks Toolbar
+   * If enabled, hide bookmarks toolbar and show when url bar is hovered.
+   * Ensure bookmarks toolbar is set to "always show" for proper behavior.
+   * 0: Disabled
+   * 1: Enabled
+   */
+  --dynamic-bookmarks: 1;
+
+  /* Dynamic Bookmarks Toolbar Hover Delay */
+  --dynamic-bookmarks-hover-delay: 450ms;
+
+  /* Dynamic Bookmarks Toolbar Hide Delay */
+  --dynamic-bookmarks-hide-delay: 50ms;
+
+  /* Floating Bookmarks Toolbar
+   * (Only with dynamic bookmarks toolbar enabled)
+   * 0: Disabled
+   * 1: Enabled
+   */
+  --floating-bookmarks: 1;
+
+  /* Floating Bookmarks Toolbar Width Mode
+   * Controls how the floating bookmarks toolbar sizes itself in one-line layout.
+   * 0 : Dynamic - Minimum width aligns with the navigation bar.
+   * 1 : Compact - Shrinks to wrap tightly around bookmarks.
+   * 2 : Full    - Spans from the left edge to the right edge of the window.
+   */
+   --floating-bookmarks-width-mode: 0;
+
+  /* Floating Bookmars Toolbar Distance from Window Corners */
+  --floating-bookmarks-top: 6px;
+  --floating-bookmarks-inline: 8px;
+
+  /* Floating Find Bar
+   * 0: Disabled
+   * 1: Enabled
+   */
+  --floating-findbar: 1;
+
+  /* Floating Find Bar Width
+   * Set to 0px for minimum width.
+   * Set to 100vw for maximum width.
+   */
+  --floating-findbar-width: calc(var(--floating-findbar-min-width) + (100cqw - 2 * var(--floating-findbar-right) - var(--floating-findbar-min-width)) * 0.12);
+
+  /* Floating Find Bar Distance from Window Corners */
+  --floating-findbar-top: 12px;
+  --floating-findbar-right: max(2cqw, 16px);
+
+  /* Show/Hide Floating Find Bar Options
+   * 0: Hide
+   * 1: Show
+   */
+  --show-highlight-all:    1;
+  --show-match-case:       1;
+  --show-match-diacritics: 1;
+  --show-whole-words:      1;
+
+  /* Floating Find Bar Options Position */
+  --highlight-all-position:    0;
+  --match-case-position:       1;
+  --match-diacritics-position: 2;
+  --whole-words-position:      3;
+
+  /* Animation Speeds
+   * Set to 0ms to disable. Automatically disabled when the OS
+   * "reduce motion" setting is on.
+   */
+  --anim-fast:   120ms;
+  --anim-normal: 180ms;
+  --anim-ease:   cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --anim-fast:   0ms;
+    --anim-normal: 0ms;
+  }
+}
+
+
+
+/* ,--. ,--.,--------.,--.,--.   ,--.,--------.,--.   ,--. 
+ * |  | |  |'--.  .--'|  ||  |   |  |'--.  .--' \  `.'  /  
+ * |  | |  |   |  |   |  ||  |   |  |   |  |     '.    /   
+ * '  '-'  '   |  |   |  ||  '--.|  |   |  |       |  |    
+ *  `-----'    `--'   `--'`-----'`--'   `--'       `--'    
+ */
+
+:root {
+  /* hide panel borders */
+  --panel-border-color: transparent !important;
+}
+
+/* hide navigator toolbox border */
+#navigator-toolbox {
+  border: none !important;
+}
+
+/* toolbox and tab bar background (also removes the theme gradient) */
+#navigator-toolbox,
+#TabsToolbar {
+  background: var(--c-bg) !important;
+}
+
+/* hide notifications toolbar */
+#notifications-toolbar {
+  display: none !important;
+}
+
+/* hide spacers */
+.titlebar-spacer {
+  display: none !important;
+}
+
+/* hide browser border */
+.browserContainer {
+  border: none !important;
+}
+
+
+
+/* ,--.     ,---.,--.   ,--.,-----. ,--. ,--.,--------. 
+ * |  |    /  O  \\  `.'  /'  .-.  '|  | |  |'--.  .--' 
+ * |  |   |  .-.  |'.    / |  | |  ||  | |  |   |  |    
+ * |  '--.|  | |  |  |  |  '  '-'  ''  '-'  '   |  |    
+ * `-----'`--' `--'  `--'   `-----'  `-----'    `--'    
+ */
+
+/* large window one-line layout */
+@media (min-width: 1200px) {
+  /* only apply when the horizontal tab strip is shown */
+  #navigator-toolbox:not([tabs-hidden]) {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    flex-direction: row !important;
+    
+    & #toolbar-menubar {
+      order: 0;
+      width: 100% !important;
+    }
+    & #nav-bar {
+      order: 1;
+      width: var(--navbar-width) !important;
+      z-index: 9999 !important;
+    }
+    & #urlbar[open] {
+      width: var(--urlbar-open-width) !important;
+      z-index: 9999 !important;
+    }
+    & #TabsToolbar {
+      order: 2;
+    }
+    & #PersonalToolbar {
+      order: 3;
+    }
+  }
+}
+
+/* enforce bookmarks toolbar width */
+#PersonalToolbar {
+  width: 100% !important;
+}
+
+
+
+/* ,--.  ,--.  ,---.,--.   ,--.      ,-----.    ,---.  ,------.  
+ * |  ,'.|  | /  O  \\  `.'  /,-----.|  |) /_  /  O  \ |  .--. ' 
+ * |  |' '  ||  .-.  |\     / '-----'|  .-.  \|  .-.  ||  '--'.' 
+ * |  | `   ||  | |  | \   /         |  '--' /|  | |  ||  |\  \  
+ * `--'  `--'`--' `--'  `-'          `------' `--' `--'`--' '--' 
+ */
+
+/* hide nav bar background and border */
+#nav-bar {
+  background: none !important;
+  border: none !important;
+}
+
+/* web app icon */
+#taskbar-tabs-favicon {
+  order: -2 !important;
+  margin: auto var(--toolbarbutton-padding-inner) !important;
+  padding-inline-start: var(--toolbar-padding-inline) !important;
+  padding-inline-end: var(--toolbarbutton-padding-outer) !important;
+}
+
+/* hamburger menu */
+#PanelUI-button {
+  order: -1 !important;
+}
+#PanelUI-menu-button {
+  padding-inline-end: var(--toolbarbutton-padding-outer) !important;
+
+  :root:not([taskbartab]) & {
+    padding-inline-start: var(--toolbar-padding-inline) !important;
+  }
+}
+
+/* dynamic toolbar buttons */
+#nav-bar-customization-target > :not(#home-button, #forward-button, #back-button, #stop-reload-button, :is(#home-button, #forward-button, #back-button, #stop-reload-button, :not(toolbarbutton, .unified-extensions-item, #vertical-spacer)) ~ *):is(toolbarbutton, .unified-extensions-item) {
+  opacity: 0 !important;
+  width: 0px !important;
+  padding: 0px !important;
+  box-sizing: content-box !important;
+  justify-content: flex-end !important;
+  overflow: hidden !important;
+  transition: opacity 100ms ease-out, width 100ms ease-out, padding 100ms ease-out !important;
+}
+/* show buttons on interaction or when hamburger menu is hovered */
+#nav-bar:has(#PanelUI-menu-button:not([open]):hover) #nav-bar-customization-target,
+#nav-bar-customization-target:has(> :not(#home-button, #forward-button, #back-button, #stop-reload-button, :is(#home-button, #forward-button, #back-button, #stop-reload-button, :not(toolbarbutton, .unified-extensions-item, #vertical-spacer)) ~ *):is(toolbarbutton, .unified-extensions-item):is(:hover, [open], :has(.toolbarbutton-icon[showing]))),
+#nav-bar-customization-target:has(> :not(#home-button, #forward-button, #back-button, #stop-reload-button, :is(#home-button, #forward-button, #back-button, #stop-reload-button, :not(toolbarbutton, .unified-extensions-item, #vertical-spacer)) ~ *):is(toolbarbutton, .unified-extensions-item) *:is(:hover, [open], :has(.toolbarbutton-icon[showing]))) {
+  & > :not(#home-button, #forward-button, #back-button, #stop-reload-button, :is(#home-button, #forward-button, #back-button, #stop-reload-button, :not(toolbarbutton, .unified-extensions-item, #vertical-spacer)) ~ *) {
+    &:is(toolbaritem) {
+      opacity: 1 !important;
+      width: calc(2 * var(--toolbarbutton-padding-inner) + 2 * var(--toolbarbutton-padding-outer) + 16px) !important;
+      transition-delay: var(--dynamic-buttons-hover-delay) !important;
+    }
+    &:is(toolbarbutton:not(#ipprotection-button)) {
+      opacity: 1 !important;
+      width: calc(2 * var(--toolbarbutton-padding-inner) + 16px) !important;
+      padding: 0px var(--toolbarbutton-padding-outer) !important;
+      transition-delay: var(--dynamic-buttons-hover-delay) !important;
+    }
+    &:is(#ipprotection-button) {
+      opacity: 1 !important;
+      width: calc(2 * var(--toolbarbutton-padding-inner) + var(--size-image-small)) !important;
+      padding: 0px var(--toolbarbutton-padding-outer) !important;
+      transition-delay: var(--dynamic-buttons-hover-delay) !important;
+    }
+  }
+}
+
+/* dynamic forward/back button */
+#nav-bar-customization-target > :is(#forward-button, #back-button) {
+  width: calc(2 * var(--toolbarbutton-padding-inner) + 16px) !important;
+  box-sizing: content-box !important;
+  overflow: hidden !important;
+  justify-content: flex-start !important;
+  transition: width 100ms ease-out, padding 100ms ease-out !important;
+
+  &:is([disabled]) {
+    width: 0px !important;
+    padding: 0px !important;
+  }
+}
+
+/* remove margins from extension buttons*/
+.unified-extensions-item {
+  margin-inline: 0px !important;
+}
+
+/* override default first item padding */
+#nav-bar-customization-target > toolbarpaletteitem:first-child > *,
+#nav-bar-customization-target > :first-child:not([disabled]) {
+  &:is(toolbarbutton) {
+    padding-inline-start: var(--toolbarbutton-padding-outer) !important;
+  }
+  &:is(toolbaritem) {
+    padding-inline-start: 0px !important;
+  }
+}
+
+/* pad last visible item in nav bar (large window) */
+@media (min-width: 1200px) {
+  /* need to be explicit about hbox else FireFox crashes on dialog box popup for some reason */
+  hbox#nav-bar-customization-target > :nth-last-child(1 of :is(toolbarbutton, toolbaritem):not([disabled], #unified-extensions-button)) {
+    &:is(#stop-reload-button, .unified-extensions-item) {
+      padding-inline-end: calc(var(--urlbar-margin-inline) - var(--toolbarbutton-padding-outer)) !important;
+    }
+    &:not(#urlbar-container, #stop-reload-button, .unified-extensions-item) {
+      padding-inline-end: var(--urlbar-margin-inline) !important;
+    }
+  }
+}
+
+/* pad last visible item in nav bar (small window) */
+@media (max-width: 1200px) {
+  /* need to be explicit about hbox else FireFox crashes on dialog box popup for some reason */
+  hbox#nav-bar-customization-target > :nth-last-child(1 of :is(toolbarbutton, toolbaritem):not([disabled], #unified-extensions-button)) {
+    &:is(#stop-reload-button, .unified-extensions-item) {
+      padding-inline-end: calc(var(--toolbar-padding-inline) - var(--toolbarbutton-padding-outer)) !important;
+    }
+    &:not(#stop-reload-button, .unified-extensions-item) {
+      padding-inline-end: var(--toolbar-padding-inline) !important;
+    }
+  }
+}
+
+
+
+/* ,--. ,--.,------. ,--.       ,-----.    ,---.  ,------.  
+ * |  | |  ||  .--. '|  |,-----.|  |) /_  /  O  \ |  .--. ' 
+ * |  | |  ||  '--'.'|  |'-----'|  .-.  \|  .-.  ||  '--'.' 
+ * '  '-'  '|  |\  \ |  '--.    |  '--' /|  | |  ||  |\  \  
+ *  `-----' `--' '--'`-----'    `------' `--' `--'`--' '--' 
+ */
+
+/* has a fixed sized for some reason; make it auto */
+#urlbar-container {
+  width: auto !important;
+  transition: 0.3s ease;
+}
+
+#urlbar {
+  transition: 0.3s ease;
+}
+
+/* only show url bar background on hover/focus */
+#urlbar:not(:hover, [focused]) .urlbar-background {
+  background: none !important;
+}
+
+/* url bar background when focused */
+#urlbar[focused] .urlbar-background {
+  background: var(--c-deep) !important;
+}
+
+.button-background.labelled {
+  background-color: var(--c-bg) !important;
+}
+
+/* hide url bar border */
+.urlbar-background {
+  border: none !important;
+}
+
+/* pad url bar text */
+#urlbar:not([focused]) .urlbar-input-box {
+  padding-left: var(--urlbar-icon-padding) !important;
+}
+
+/* hide "shield", identity box, and page action buttons */
+/* #urlbar:not(:hover, [focused], :has(:is(:hover, [open]))) :is(#trust-icon-container, #tracking-protection-icon-container, #identity-box, #page-action-buttons > :not(#reader-mode-button[readeractive], #translations-button[translationsactive], #urlbar-zoom-button)) { */
+/*   display: none !important; */
+/* } */
+
+/* position zoom button last */
+#urlbar-zoom-button {
+  order: 99 !important;
+}
+
+/* ,--------. ,---.  ,-----.   ,---.   
+ * '--.  .--'/  O  \ |  |) /_ '   .-'  
+ *    |  |  |  .-.  ||  .-.  \`.  `-.  
+ *    |  |  |  | |  ||  '--' /.-'    | 
+ *    `--'  `--' `--'`------' `-----'  
+ */
+
+/* horizontal tabs */
+#navigator-toolbox:not([tabs-hidden]) {
+
+  /* hide default border, padding, and margin left of tabs */
+  #tabbrowser-tabs {
+    border-inline-start: none !important;
+    padding-inline-start: 0px !important;
+    margin-inline-start: 0px !important;
+  }
+
+  /* add padding left of first tab (small window) */
+  @media (max-width: 1200px) {
+    #pinned-tabs-container, #tabbrowser-tabs:not([overflow], :has(#pinned-tabs-container > .tabbrowser-tab)) #tabbrowser-arrowscrollbox {
+      /* & > .tabbrowser-tab:first-child, & > tab-group:first-child > .tab-group-label-container { */
+      & > tab-group:first-child > .tab-group-label-container {
+        padding-inline-start: var(--tab-overflow-clip-margin) !important;
+      }
+    }
+  }
+
+  /* remove gap after pinned tabs */
+  #pinned-tabs-container {
+    margin-inline-end: 0px !important;
+  }
+
+  /* dynamic tab width */
+  .tabbrowser-tab[selected]:not([pinned]) {
+    max-width: var(--active-tab-width) !important;
+  }
+  :not([collapsed]) > .tabbrowser-tab[fadein]:not([selected], [pinned]) {
+    max-width: var(--inactive-tab-width) !important;
+  }
+}
+
+/* hide tab border and outline*/
+.tab-background {
+  border: none !important;
+  outline: none !important;
+  transition: background-color var(--anim-fast) ease-out !important;
+  /* selected tab background still leaks through; hide it */
+  &[selected] {
+    background: var(--c-deep) !important;
+  }
+}
+
+/* dynamic tab close button */
+.tabbrowser-tab:not([pinned]) .tab-close-button {
+  display: none !important;
+}
+.tabbrowser-tab:not([pinned]):hover .tab-close-button {
+  display: inline-block !important;
+}
+
+
+
+/* ,-----.   ,-----.  ,-----. ,--. ,--.,--.   ,--.  ,---.  ,------. ,--. ,--. ,---.   
+ * |  |) /_ '  .-.  ''  .-.  '|  .'   /|   `.'   | /  O  \ |  .--. '|  .'   /'   .-'  
+ * |  .-.  \|  | |  ||  | |  ||  .   ' |  |'.'|  ||  .-.  ||  '--'.'|  .   ' `.  `-.  
+ * |  '--' /'  '-'  ''  '-'  '|  |\   \|  |   |  ||  | |  ||  |\  \ |  |\   \.-'    | 
+ * `------'  `-----'  `-----' `--' '--'`--'   `--'`--' `--'`--' '--'`--' '--'`-----'  
+ */
+
+/* dynamic bookmarks toolbar */
+/* @container logic adapted from FoxOne (github.com/Firnschnee/FoxOne) */
+@container style(--dynamic-bookmarks: 1) {
+  #navigator-toolbox {
+    position: relative !important;
+    z-index: 9999 !important;
+    overflow: visible !important;
+  }
+  #PersonalToolbar:not([customizing]) {
+    position: absolute !important;
+    top: 100% !important;
+    opacity: 0 !important;
+    transform-origin: top;
+    transform: scaleY(0.96) translateY(-4px) !important;
+    max-height: 0px !important;
+    background: var(--c-surface) !important;
+    transition:
+      opacity 100ms ease-out var(--dynamic-bookmarks-hide-delay),
+      transform 100ms ease-out var(--dynamic-bookmarks-hide-delay),
+      max-height 0s step-end calc(100ms + var(--dynamic-bookmarks-hide-delay)),
+      var(--ext-theme-background-transition) !important;
+  }
+  #navigator-toolbox:not(:has(#urlbar[open])) {
+    /* show bookmarks toolbar when url bar is hovered */
+    &:has(#urlbar-container:hover) #PersonalToolbar {
+      opacity: 1 !important;
+      transform: scaleY(1) translateY(0px) !important;
+      max-height: 4em !important;
+      transition-delay: var(--dynamic-bookmarks-hover-delay), var(--dynamic-bookmarks-hover-delay), 0s, 0s !important;
+    }
+    /* immediately show if bookmarks toolbar is hovered */
+    & #PersonalToolbar:is(:hover, :has(toolbarbutton[open])) {
+      opacity: 1 !important;
+      transform: scaleY(1) translateY(0px) !important;
+      max-height: 4em !important;
+      transition-delay: 0s, 0s, 0s, 0s !important;
+    }
+  }
+  /* immediately hide when url bar is opened */
+  #navigator-toolbox:has(#urlbar[open]) #PersonalToolbar {
+    transition-delay: 0s, 0s, 100ms, 0s !important;
+  }
+}
+
+/* floating bookmarks toolbar */
+@container style(--dynamic-bookmarks: 1) and style(--floating-bookmarks: 1) {
+  #PersonalToolbar:not([customizing]) {
+    width: auto !important;
+    margin-top: var(--floating-bookmarks-top) !important;
+    padding-inline: 2px !important;
+    border: 1px solid var(--c-border) !important;
+    border-radius: var(--c-radius) !important;
+    box-shadow: var(--panel-box-shadow) !important;
+    overflow: visible !important;
+  }
+  /* large window */
+  @media (min-width: 1200px) {
+    /* --floating-bookmarks-width-mode = 0: dynamic*/
+    @container style(--floating-bookmarks-width-mode: 0) {
+      #navigator-toolbox:not([tabs-hidden]) #PersonalToolbar:not([customizing]) {
+        min-width: calc(var(--navbar-width) - var(--floating-bookmarks-inline)) !important;
+        max-width: calc(100% - 2*var(--floating-bookmarks-inline)) !important;
+        margin-left: var(--floating-bookmarks-inline) !important;
+        margin-right: var(--floating-bookmarks-inline) !important;
+      }
+    }
+    /* --floating-bookmarks-width-mode = 1: compact */
+    @container style(--floating-bookmarks-width-mode: 1) {
+      #navigator-toolbox:not([tabs-hidden]) #PersonalToolbar:not([customizing]) {
+        max-width: calc(100% - 2*var(--floating-bookmarks-inline)) !important;
+        margin-left: var(--floating-bookmarks-inline) !important;
+        margin-right: var(--floating-bookmarks-inline) !important;
+      }
+    }
+    /* --floating-bookmarks-width-mode = 2: full */
+    @container style(--floating-bookmarks-width-mode: 2) {
+      #PersonalToolbar:not([customizing]) {
+        left: var(--floating-bookmarks-inline) !important;
+        right: var(--floating-bookmarks-inline) !important;
+      }
+    }
+    /* web apps, vertical tabs: always maximum width */
+    #navigator-toolbox[tabs-hidden] #PersonalToolbar:not([customizing]) {
+      left: var(--floating-bookmarks-inline) !important;
+      right: var(--floating-bookmarks-inline) !important;
+    }
+  }
+  /* small window */
+  @media (max-width: 1200px) {
+    #PersonalToolbar:not([customizing]) {
+      left: var(--floating-bookmarks-inline) !important;
+      right: var(--floating-bookmarks-inline) !important;
+    }
+  }
+
+  /* Create an invisible "hover bridge" across the floating margin */
+  #PersonalToolbar:not([customizing])::before {
+    content: "";
+    position: absolute;
+    top: calc(0px - var(--floating-bookmarks-top));
+    width: 100%;
+    height: calc(50% + var(--floating-bookmarks-top));
+    pointer-events: none;
+  }
+  #navigator-toolbox:not(:has(#urlbar[open])):has(#urlbar-container:hover, #PersonalToolbar:hover) #PersonalToolbar:not([customizing])::before{
+    pointer-events: auto;
+  }
+}
+
+/* toolbar button margins */ 
+#PersonalToolbar toolbarbutton {
+  margin-top: 4px !important;
+  margin-bottom: 4px !important;
+}
+
+
+
+/*  ,---.  ,--.,------.  ,------.,-----.    ,---.  ,------.  
+ * '   .-' |  ||  .-.  \ |  .---'|  |) /_  /  O  \ |  .--. ' 
+ * `.  `-. |  ||  |  \  :|  `--, |  .-.  \|  .-.  ||  '--'.' 
+ * .-'    ||  ||  '--'  /|  `---.|  '--' /|  | |  ||  |\  \  
+ * `-----' `--'`-------' `------'`------' `--' `--'`--' '--' 
+ */
+
+#sidebar-main, #browser {
+  background-color: var(--c-bg) !important;
+}
+
+
+
+/* ,------.,--.,--.  ,--.,------.         ,-----.    ,---.  ,------.  
+ * |  .---'|  ||  ,'.|  ||  .-.  \ ,-----.|  |) /_  /  O  \ |  .--. ' 
+ * |  `--, |  ||  |' '  ||  |  \  :'-----'|  .-.  \|  .-.  ||  '--'.' 
+ * |  |`   |  ||  | `   ||  '--'  /       |  '--' /|  | |  ||  |\  \  
+ * `--'    `--'`--'  `--'`-------'        `------' `--' `--'`--' '--' 
+ *  ___________________________________________________________________________________
+ * |  ————————————————————————————————————————————————————————————   ———— ————   ————  |
+ * | | Find in page                                               | | /\ | \/ | | >< | |
+ * |  ————————————————————————————————————————————————————————————   ———— ————   ————  |
+ *  ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+ *  6                        {textboxWidth}                        8  28   28  8  28  6                                  = 112px + {textboxWidth}
+ *  _______________________________________________________________________________________________________________
+ * |  ————————————————————————————————————————————————————————————   ———— ————   ————   ————   ————   ————   ————  |
+ * | | Find in page                                               | | /\ | \/ | |[ab]| | Aa | | aá | | a̲b̲ | | >< | |
+ * |  ————————————————————————————————————————————————————————————   ———— ————   ————   ————   ————   ————   ————  |
+ *  ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+ *  6                        {textboxWidth}                        8  28   28  8       {optionsWidth}         28  6      = 112px + {optionsWidth} + {textboxWidth}
+ */
+
+:root {
+  --options-count: calc(var(--show-highlight-all) + var(--show-match-case) + var(--show-match-diacritics) + var(--show-whole-words));
+  --show-margin: min(1, var(--options-count));
+
+  /* width of everything except textbox */
+  --floating-findbar-fixed-width: calc(112px + var(--options-count)*38px + var(--show-margin)*6px);
+
+  --floating-findbar-min-width: 600px;
+  --floating-findbar-max-width: calc(100cqw - 2*var(--floating-findbar-right));
+  --floating-findbar-width-use: clamp(var(--floating-findbar-min-width), var(--floating-findbar-width), var(--floating-findbar-max-width));
+
+  /* 1 = collapsed (min width >= max width), 0 = expanded (min width < max width) */
+  --is-collapsed: clamp(0, sign(var(--floating-findbar-min-width) - var(--floating-findbar-max-width)) + 1, 1);
+
+  --textbox-width-expanded:  calc((1 - var(--is-collapsed)) * (var(--floating-findbar-width-use) - var(--floating-findbar-fixed-width)));
+  --textbox-width-collapsed: calc((    var(--is-collapsed)) * (var(--floating-findbar-max-width) - 112px                     ));
+  --textbox-width: max(var(--textbox-width-expanded), var(--textbox-width-collapsed));
+}
+
+/* floating find bar */
+@container style(--floating-findbar: 1) {
+  .browserContainer {
+    container-type: inline-size !important;
+  }
+
+  /* format find bar */
+  findbar {
+    --findbar-border-top-width: 0px !important;
+    --findbar-padding-block: 4px !important;
+
+    position: absolute !important;
+    grid-area: auto !important;
+    top: var(--floating-findbar-top) !important;
+    right: var(--floating-findbar-right) !important;
+    width: var(--floating-findbar-width-use) !important;
+    max-width: var(--floating-findbar-max-width) !important;
+    margin-bottom: 0 !important;
+    border: none !important;
+    border-radius: var(--c-radius) !important;
+    box-shadow: var(--panel-box-shadow) !important;
+  }
+
+  /* find bar transition */
+  findbar {
+    opacity: 1 !important;
+    transform-origin: top !important;
+    transform: scaleY(1) translateY(0px) !important;
+    transition: opacity 100ms ease-out, transform 100ms ease-out, visibility 0s step-end, background-color var(--inactive-window-transition) !important;
+
+    &[hidden] {
+      opacity: 0 !important;
+      transform: scaleY(0.96) translateY(-4px) !important;
+      transition-delay: 0s, 0s, 100ms, 0s !important;
+    }
+  }
+
+  /* find bar background */
+  #main-window:not([privatebrowsingmode]) findbar {
+    background: var(--c-deep) !important;
+  }
+
+  /* format find bar container*/
+  .findbar-container {
+    margin-inline-start: var(--findbar-padding-block) !important;
+  }
+
+  /* format textbox */
+  .findbar-textbox {
+    width: var(--textbox-width) !important;
+    border: none !important;
+    color: var(--c-fg) !important;
+
+    &:not([status]) {
+      background-color: transparent !important;
+    }
+    &:not([status]):focus {
+      background-color: var(--c-bg) !important;
+    }
+    &:not(:focus, [status]):hover {
+      background-color: var(--c-raised) !important;
+    }
+  }
+
+  /* position found matches label */
+  label.found-matches {
+    position: absolute !important;
+    right: calc(100% - var(--textbox-width) - 4px + var(--space-medium)) !important;
+    text-align: right !important;
+    margin: 0px !important;
+    color: var(--c-dim) !important;
+  }
+
+  /* hide other labels */
+  .findbar-label:not(.found-matches) {
+    display: none !important;
+  }
+
+  /* simplify checkboxes */
+  .findbar-container > checkbox {
+    display: grid !important;
+    justify-items: center !important;
+    margin-left: 0px !important;
+    overflow: hidden !important;
+    transition: background-color var(--anim-fast) ease-out !important;
+  }
+  .findbar-container > checkbox * {
+    display: none !important;
+  }
+
+  /* format checkboxes */
+  .findbar-highlight {
+    order: var(--highlight-all-position) !important;
+    width: calc(36px * var(--show-highlight-all)) !important;
+    height: calc(28px * var(--show-highlight-all)) !important;
+    margin-right: calc(2px * var(--show-highlight-all)) !important;
+  }
+  .findbar-case-sensitive {
+    order: var(--match-case-position) !important;
+    width: calc(36px * var(--show-match-case)) !important;
+    height: calc(28px * var(--show-match-case)) !important;
+    margin-right: calc(2px * var(--show-match-case)) !important;
+  }
+  .findbar-match-diacritics {
+    order: var(--match-diacritics-position) !important;
+    width: calc(36px * var(--show-match-diacritics)) !important;
+    height: calc(28px * var(--show-match-diacritics)) !important;
+    margin-right: calc(2px * var(--show-match-diacritics)) !important;
+  }
+  .findbar-entire-word {
+    order: var(--whole-words-position) !important;
+    width: calc(36px * var(--show-whole-words)) !important;
+    height: calc(28px * var(--show-whole-words)) !important;
+    margin-right: calc(2px * var(--show-whole-words)) !important;
+  }
+
+  /* option icons (color is shared; the entire-word underline uses currentColor) */
+  .findbar-container > checkbox::before,
+  .findbar-container > checkbox::after {
+    color: var(--c-fg);
+  }
+  .findbar-container > checkbox[checked]::before,
+  .findbar-container > checkbox[checked]::after {
+    color: var(--c-on-accent);
+  }
+  .findbar-highlight::before {
+    content: "[ab]";
+    font-weight: bold;
+  }
+  .findbar-case-sensitive::before {
+    content: "Aa";
+    font-weight: bold;
+  }
+  .findbar-match-diacritics::before {
+    content: "aá";
+    font-weight: bold;
+  }
+  .findbar-entire-word::before {
+    content: "ab";
+    font-weight: bold;
+    grid-row: 1;
+    grid-column: 1;
+  }
+  .findbar-entire-word::after {
+    content: "";
+    width: 1.4em;
+    height: 0.2em;
+    margin-bottom: -1em;
+    border-left: 2px solid currentColor;
+    border-right: 2px solid currentColor;
+    border-bottom: 1px solid currentColor;
+    grid-row: 1;
+    grid-column: 1;
+  }
+
+  /* checkbox hover/active background */
+  .findbar-container > checkbox:not([checked]):hover {
+    background-color: var(--c-raised) !important;
+    border-radius: var(--c-radius) !important;
+  }
+  .findbar-container > checkbox[checked] {
+    background-color: var(--c-accent) !important;
+    border-radius: var(--c-radius) !important;
+  }
+
+  /* format close button */
+  .findbar-closebutton {
+    margin-left: calc(6px * var(--show-margin)) !important;
+    margin-right: calc(var(--findbar-padding-block) + var(--space-xsmall)) !important;
+    border: none !important;
+  }
+}
+
+
+
+/* ANIMATIONS + POPUPS
+ * Spawn animations for the url bar, popups, context menus and dialogs, plus
+ * the context menu theme. Speeds come from --anim-fast / --anim-normal.
+ */
+
+/* a start state only; the browser animates to whatever the element normally is */
+@keyframes tm-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+@keyframes tm-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* url bar: smooth width change when it opens, results dropdown slides in */
+#urlbar[breakout] {
+  transition: width var(--anim-normal) var(--anim-ease) !important;
+}
+.urlbar-background {
+  transition: background-color var(--anim-fast) ease-out !important;
+}
+#urlbar[open] .urlbarView {
+  transform-origin: top;
+  animation: tm-pop-in var(--anim-normal) var(--anim-ease);
+}
+
+/* popups and context menus */
+:is(menupopup, panel)::part(content) {
+  transform-origin: top;
+  animation: tm-pop-in var(--anim-normal) var(--anim-ease);
+}
+
+/* dialogs (tab prompts, settings sub-dialogs) */
+.dialogOverlay {
+  animation: tm-fade-in var(--anim-fast) ease-out;
+}
+.dialogBox {
+  animation: tm-pop-in var(--anim-normal) var(--anim-ease);
+}
+
+/* context menu + popup theme */
+menupopup,
+panel {
+  --panel-background: var(--c-surface);
+  --panel-color: var(--c-fg);
+  --panel-border-radius: var(--c-radius);
+  --arrowpanel-background: var(--c-surface);
+  --arrowpanel-color: var(--c-fg);
+  --arrowpanel-border-radius: var(--c-radius);
+}
+
+menupopup > :is(menuitem, menu) {
+  color: var(--c-fg) !important;
+  margin-inline: 4px !important;
+  border-radius: calc(var(--c-radius) / 2) !important;
+  transition: background-color var(--anim-fast) ease-out !important;
+
+  &:not([disabled]):is([_moz-menuactive], :hover),
+  &[open] {
+    background-color: var(--c-raised) !important;
+  }
+  &[disabled] {
+    color: var(--c-dim) !important;
+  }
+}
+
+menupopup > menuseparator {
+  appearance: none !important;
+  border: none !important;
+  border-top: 1px solid var(--c-border) !important;
+  margin: 4px 8px !important;
+}

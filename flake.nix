@@ -1,16 +1,18 @@
 {
-  description = "A top level flake";
+    description = "A top level flake";
 
-  inputs = {
-    nixpkgs.url     = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-parts.url = "github:hercules-ci/flake-parts";
-    import-tree.url = "github:vic/import-tree";
+    inputs = {
+        nixpkgs.url     = "github:NixOS/nixpkgs/nixos-unstable";
+        flake-parts.url = "github:hercules-ci/flake-parts";
+        import-tree.url = "github:vic/import-tree";
 
-    mango.url = "github:mangowm/mango";
-    theme_manager = { url = "github:adrsha/theme_manager"; flake = false; };
-  };
+        mango.url = "github:mangowm/mango";
+        theme_manager = { url = "github:adrsha/theme_manager"; flake = false; };
+        amane.url = "github:MystiaFin/amane";
+        quickemu.url = "github:quickemu-project/quickemu";
+    };
 
-  outputs = inputs:
-    inputs.flake-parts.lib.mkFlake { inherit inputs; }
-    	(inputs.import-tree ./modules);
+    outputs = inputs:
+        inputs.flake-parts.lib.mkFlake { inherit inputs; }
+        (inputs.import-tree ./modules);
 }

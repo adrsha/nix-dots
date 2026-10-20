@@ -1,0 +1,38 @@
+--- a/src/input/target.rs
++++ b/src/input/target.rs
+@@ -72 +72,34 @@
+-        target.area = target.area.intersect(area);
++        // Target areas stay in their own local coordinate space. Map the
++        // clipping viewport there too; intersecting parent coordinates here
++        // discarded translated (scrolled) controls that are visibly onscreen.
++        let corners = [
++            target.inverse.map(area.x, area.y),
++            target.inverse.map(area.x + area.width, area.y),
++            target.inverse.map(area.x, area.y + area.height),
++            target.inverse.map(area.x + area.width, area.y + area.height),
++        ];
++        let left = corners.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
++        let right = corners.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max);
++        let top = corners.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
++        let bottom = corners.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
++        target.area = target.area.intersect(Area::new(left, top, right-left, bottom-top));
++    }
++}
++
++#[cfg(test)]
++mod clipping_tests {
++    use super::*;
++    #[test]
++    fn scrolled_visible_target_is_not_discarded() {
++        let mut target=Target::new(Area::new(10.0,600.0,100.0,80.0),Handlers::default());
++        target.inverse=Transform::from_translate(0.0, -500.0).invert().unwrap();
++        clip(std::slice::from_mut(&mut target),Area::new(0.0,0.0,400.0,300.0));
++        assert!(target.contains(40.0,120.0));
++        assert!(!target.contains(40.0,310.0));
++    }
++    #[test]
++    fn scrolled_hidden_target_remains_inactive() {
++        let mut target=Target::new(Area::new(10.0,100.0,100.0,80.0),Handlers::default());
++        target.inverse=Transform::from_translate(0.0, -500.0).invert().unwrap();
++        clip(std::slice::from_mut(&mut target),Area::new(0.0,0.0,400.0,300.0));
++        assert_eq!(target.area.height,0.0);

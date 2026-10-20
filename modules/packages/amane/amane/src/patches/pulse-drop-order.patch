@@ -1,0 +1,14 @@
+--- a/src/services/audio/pulse.rs
++++ b/src/services/audio/pulse.rs
+@@ -165,8 +165,10 @@
+ }
+ 
+ struct Connection {
+-    mainloop: Mainloop,
++    // context is declared before mainloop so it is dropped first:
++    // freeing the mainloop first leaves context's io callback dangling
+     context: Context,
++    mainloop: Mainloop,
+ }
+ 
+ impl Connection {

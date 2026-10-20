@@ -1,14 +1,44 @@
-{ inputs, config, ...}:
+{ inputs, config, ... }:
+let
+    nixosModules = config.flake.nixosModules;
+in
 {
     flake.nixosConfigurations.chilly = inputs.nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         modules = [
-            ../../nixos_config/configuration.nix 
-            config.flake.nixosModules.mango
-            config.flake.nixosModules.fonts
-            config.flake.nixosModules.kitty
-            config.flake.nixosModules.nvim
-            config.flake.nixosModules.theme_manager
+            # Host-specific: things that only make sense for this machine.
+            ../../nixos_config/hardware-configuration.nix
+            {
+                networking.hostName = "arch";
+                # Never change after install, see `man configuration.nix`.
+                system.stateVersion = "26.05";
+            }
+
+            # System
+            nixosModules.boot
+            nixosModules.session
+            nixosModules.networking
+            nixosModules.locale
+            nixosModules.audio
+            nixosModules.hardware
+            nixosModules.users
+            nixosModules.services
+            nixosModules.packages
+            nixosModules.nix
+
+            # Programs / desktop
+            nixosModules.mango
+            nixosModules.fonts
+            nixosModules.kitty
+            nixosModules.nvim
+            nixosModules.quickemu
+            nixosModules.amane
+            nixosModules.theme_manager
+            nixosModules.firefox
+
+            # Programs / terminal
+            nixosModules.zsh
+            nixosModules.lsd
         ];
     };
 }

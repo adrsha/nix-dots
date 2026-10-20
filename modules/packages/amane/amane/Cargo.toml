@@ -1,0 +1,22 @@
+[package]
+name = "amane-shell"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "amane-shell"
+path = '/home/chilly/flakes/modules/packages/amane/amane/src/main.rs'
+
+[dependencies]
+amane = { path = '/home/chilly/.cache/amane/library' }
+
+[profile.dev]
+opt-level = 3
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+incremental = false
+
+[workspace]
