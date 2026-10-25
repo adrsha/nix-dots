@@ -28,6 +28,11 @@
             };
         };
 
+        # services.openvpn.servers.work = {
+        #     autoStart = false;
+        #     config = "config ~/flakes/modules/vpns/Iceland-TUN.ovpn";
+        # };
+
         # KDE Connect ports (1714-1764) are opened by programs.kdeconnect.enable.
         networking.firewall.enable = true;
     };

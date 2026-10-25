@@ -5,10 +5,11 @@ animated Mango workspace pills, playback controls, volume and brightness. There 
 button: click the row background or clock again to collapse it.
 
 Hover the date for a local-month calendar, playback controls for a Now Playing widget,
-and volume/brightness icons for vertical sliders. Scroll an icon or slider to
-adjust; drag a slider to set a level. Right-click volume to mute/unmute. Popups
-remain open while moving from the bar into them, with a 300ms dismissal grace.
-The calendar is refreshed on opening, including after a date/month change.
+volume/brightness icons for vertical sliders, and the palette icon for an HSV color
+picker. Scroll an icon or slider to adjust; drag a slider to set a level. Right-click
+volume to mute/unmute. Popups remain open while moving from the bar into them, with a
+300ms dismissal grace. The calendar is refreshed on opening, including after a
+date/month change.
 
 The status surface follows the pill's animated dimensions, with an 8px top
 margin. Dimensions use an even logical-pixel grid; the spring settles exactly
@@ -73,6 +74,7 @@ amane ipc call popup calendar         # keyboard/preview access
 amane ipc call popup media
 amane ipc call popup volume
 amane ipc call popup brightness
+amane ipc call popup color
 amane ipc call popup hide
 amane ipc call media play-pause
 amane ipc call media previous
@@ -91,9 +93,7 @@ amane ipc call brightness show
 Volume changes from other applications also trigger the compact OSD. The open
 panel stays open while adjusting controls; compact OSDs appear when collapsed.
 Media needs an MPRIS-compatible player on the session D-Bus. Audio uses the
-default PulseAudio/PipeWire-Pulse output device.
-
-Brightness uses the existing DDC/CI implementation, **not laptop backlight**.
+default PulseAudio/PipeWire-Pulse output device.Brightness uses the existing DDC/CI implementation, **not laptop backlight**.
 It targets display `1` in `src/ddc.rs`; use `ddcutil detect` to check that choice.
 DDC/CI must be enabled in the monitor's menu and your user needs access to its
 I²C device. The Nix module enables I²C and installs ddcutil, but permissions may
@@ -275,7 +275,22 @@ amane ipc call auxiliary session        # lower-left side: confirmed session act
 amane ipc call auxiliary search         # bottom-center: type, arrows, Enter, Esc
 amane ipc call auxiliary search firefox # optional initial query
 amane ipc call auxiliary hide
+amane ipc call picker                    # toggle screen color picker (show/hide/status)
 ```
+
+## Screen color picker
+
+`amane ipc call picker` freezes the screen once with `grim` (P6 netpbm, sampled
+locally so only one capture runs), tucks the island and auxiliary menus away,
+and shows a full-screen overlay: a crosshair, a 15×15 magnifier centred on the
+pointer, and a readout card with a swatch, `#rrggbb` hex and RGB values. Left
+click copies the pixel under the pointer as hex with `wl-copy` and exits, writing
+`$XDG_STATE_HOME/amane/picked-color` and running `~/.config/amane/hooks/color HEX`
+when present. Right click hands the pixel to the colour popup, which opens from
+the bar preset to that colour with clickable rows for `#rrggbb`, `rgb(r,g,b)` and
+`hsl(H, S%, L%)`. Escape cancels, as does `picker hide`; `picker copy` is the
+right-click action exposed for keybindings. `picker status` reports
+`active`/`inactive`. Requires `grim` and `wl-copy` on `PATH`.
 
 Auxiliary action menus are vertical. Screenshot emerges from the lower-right
 lateral border, sessions from the lower-left lateral border, and recording from
@@ -322,7 +337,7 @@ amane ipc call island reveal                # or show: reveal without toggling
 amane ipc call volume up                     # down | mute | show | 0–100
 amane ipc call brightness up                 # down | show | 0–100
 amane ipc call media play-pause              # previous | next
-amane ipc call popup calendar                # media | volume | brightness | hide
+amane ipc call popup calendar                # media | volume | brightness | color | hide
 amane ipc call popup workspace ID
 amane ipc call settings                      # history | network | bluetooth | customization | hide
 amane ipc call auxiliary screenshot          # record | session (or sessions) | search [query]
@@ -553,3 +568,22 @@ not independently measured displayed FPS. The initial baseline was short and hit
 a Wayland configure-serial error, so it is not a clean sustained before/after FPS
 benchmark. Later probes exercised main toggles, screenshot/session/search toggles,
 and settings open/close without that error. Diagnostic logging is disabled again.
+
+### Color picker
+
+The Controls module now has a third icon (palette, CYAN accent) after volume and
+brightness. Hovering or clicking it opens an HSV color-picker popup with the same
+goo background, spring geometry and 300ms dismissal grace as the other hover
+popups. The saturation/value plane and the hue strip both support click and drag;
+the swatch, hex label and knob update live. Clicking the hex row copies the value
+with `wl-copy`, writes `$XDG_STATE_HOME/amane/picked-color` (atomic, hex + newline),
+and shows a transient "Copied" badge for 1.5s. If `~/.config/amane/hooks/color`
+exists and is executable, it is spawned with the hex string as its only argument,
+letting user scripts emit the color elsewhere (for example `notify-send` or a
+compositor IPC). No shell interpolation: the hex is passed as a literal argv and
+the hook path is single-quote-escaped. The picker seeds from the theme's BLUE.
+
+```sh
+amane ipc call popup color            # open the picker on demand
+```
+

@@ -19,7 +19,7 @@ pub(super) const EXPANDED: &[Module] = &[
 impl Module {
     pub(super) const fn width(self) -> f32 {
         match self {
-            Controls => CONTROL_WIDTH * 2.0 + CONTROL_GAP,
+            Controls => CONTROL_WIDTH * 3.0 + CONTROL_GAP * 2.0,
             Workspaces => MEDIA_WIDTH,
             Time => 44.0,
             Date => 52.0,
@@ -102,7 +102,8 @@ fn widget(module: Module, clock: &Clock) -> Rectangle {
                 Center,
                 Row::new(children![
                     control_icon(Osd::Volume, audio.muted(), false),
-                    control_icon(Osd::Brightness, audio.muted(), false)
+                    control_icon(Osd::Brightness, audio.muted(), false),
+                    palette_icon()
                 ])
                 .gap(CONTROL_GAP)
                 .align(Center),

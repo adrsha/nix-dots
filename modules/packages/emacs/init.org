@@ -1,0 +1,2520 @@
+#+TITLE: Emacs Configuration
+#+PROPERTY: header-args:emacs-lisp :tangle init.el :results silent :comments no
+
+A literate configuration for Emacs 31, run as a daemon and used through
+=emacsclient=. Nix provides every package, so this file only declares and
+configures them. Blocks under =Early init= tangle to =early-init.el=; all
+others tangle to =init.el=. Blocks are kept small so any one of them can be
+evaluated alone to preview a change; to keep a change, edit this file and
+rebuild.
+
+Layout:
+
+- =Early init=: settings applied before the first frame exists.
+- =Core=: paths, defaults, quiet messages, session state and performance.
+- =Appearance=: interface, theme and mode line.
+- =Functions=: shared helper commands.
+- =Editing=: modal editing, completion and general editing tools.
+- =Programming=: language servers, formatting, tree-sitter and LaTeX.
+- =Org=: helpers, SVG tags, core setup, agenda, capture and Roam.
+- =Keybindings=: which-key, leader key and per-mode bindings.
+
+* Early init
+:PROPERTIES:
+:header-args:emacs-lisp: :tangle early-init.el
+:END:
+
+Runs before the first frame exists, so it only holds settings that must be in
+place before startup: package handling, the garbage collector, native
+compilation and the look of the first frame.
+
+** Startup
+
+Turns off =package.el= (Nix owns the packages) and lifts the garbage collector
+limit while loading. =gcmh= takes over afterwards.
+
+#+begin_src emacs-lisp
+  ;;; early-init.el --- Early startup -*- lexical-binding: t; -*-
+
+  (require 'xdg)
+
+  (setq package-enable-at-startup nil
+        gc-cons-threshold most-positive-fixnum
+        inhibit-compacting-font-caches t)
+#+end_src
+
+** Native compilation
+
+Keeps compiled code in the cache directory instead of the read-only config
+directory.
+
+#+begin_src emacs-lisp
+  (setq native-comp-async-report-warnings-errors 'silent)
+
+  (when (native-comp-available-p)
+    (startup-redirect-eln-cache
+     (expand-file-name "emacs/eln-cache/" (xdg-cache-home))))
+#+end_src
+
+** Quiet startup
+
+Hides the startup screen and its messages. Ordinary warnings are still
+logged, they just no longer open a window.
+
+#+begin_src emacs-lisp
+  (setq inhibit-startup-screen t
+        initial-scratch-message nil
+        server-client-instructions nil
+        warning-minimum-level :error)
+
+  ;; `inhibit-startup-echo-area-message' only works from init.el itself.
+  (advice-add #'display-startup-echo-area-message :override #'ignore)
+#+end_src
+
+** Frame
+
+Removes bars and borders before they are drawn, so frames never flash the
+stock look.
+
+#+begin_src emacs-lisp
+  (setq frame-inhibit-implied-resize t
+        frame-title-format nil
+        echo-keystrokes 0.025)
+
+  (setq-default cursor-in-non-selected-windows nil
+                truncate-lines t
+                widget-image-enable nil)
+
+  (setq default-frame-alist '((tool-bar-lines . 0)
+                              (menu-bar-lines . 0)
+                              (vertical-scroll-bars . nil)
+                              (internal-border-width . 10)))
+
+  (menu-bar-mode -1)
+#+end_src
+
+* Core
+
+Settings every other section relies on.
+
+** Paths and environment
+
+Defines the cache, notes and theme locations once, creates their directories
+and keeps runtime files out of the config directory.
+
+#+begin_src emacs-lisp
+  ;;; init.el --- Emacs configuration -*- lexical-binding: t; -*-
+
+  (require 'cl-lib)
+  (require 'xdg)
+  (require 'use-package)
+
+  ;; Customize output is discarded: this file is the source of truth.
+  (setq custom-file null-device)
+#+end_src
+
+#+begin_src emacs-lisp
+  (defconst my/cache-dir (expand-file-name "emacs/" (xdg-cache-home)))
+  (defconst my/theme-file (expand-file-name "theme/active.json" (xdg-state-home)))
+  (defconst my/notes-dir (expand-file-name "~/Notes/"))
+  (defconst my/roam-dir (expand-file-name "~/Notes/"))
+
+  (defun my/cache (name)
+    (expand-file-name name my/cache-dir))
+#+end_src
+
+#+begin_src emacs-lisp
+  (dolist (dir (append (mapcar #'my/cache '("backups/" "auto-saves/" "sessions/" "undo/"))
+                       (list (file-name-directory my/theme-file)
+                             my/notes-dir
+                             (expand-file-name "daily/" my/roam-dir))))
+    (with-demoted-errors "init: %S" (make-directory dir t)))
+#+end_src
+
+#+begin_src emacs-lisp
+  (setq backup-directory-alist `(("." . ,(my/cache "backups/")))
+        backup-by-copying t
+        auto-save-list-file-prefix (my/cache "sessions/")
+        auto-save-file-name-transforms `((".*" ,(my/cache "auto-saves/") t))
+        recentf-save-file (my/cache "recentf")
+        savehist-file (my/cache "savehist"))
+#+end_src
+
+A daemon started by systemd has a minimal =PATH=, so common bin directories
+are appended when they exist.
+
+#+begin_src emacs-lisp
+  (dolist (dir (list "/run/current-system/sw/bin"
+                     "/run/wrappers/bin"
+                     (format "/etc/profiles/per-user/%s/bin" (user-login-name))
+                     (expand-file-name "~/.nix-profile/bin")
+                     (expand-file-name "~/.local/bin")))
+    (when (and (file-directory-p dir) (not (member dir exec-path)))
+      (add-to-list 'exec-path dir t)
+      (setenv "PATH" (concat (getenv "PATH") path-separator dir))))
+#+end_src
+
+** Defaults
+
+Plain editing behaviour: indentation, short answers, trash instead of delete
+and smooth scrolling.
+
+#+begin_src emacs-lisp
+  (setq-default indent-tabs-mode nil
+                tab-width 2
+                sentence-end-double-space nil)
+
+  (setopt use-short-answers t
+          delete-by-moving-to-trash t
+          help-window-select t
+          mouse-yank-at-point t
+          scroll-conservatively 101
+          scroll-step 1
+          ring-bell-function #'ignore
+          confirm-kill-processes nil
+          global-auto-revert-non-file-buffers t
+          uniquify-buffer-name-style 'forward
+          recentf-max-saved-items 200
+          warning-minimum-level :error)
+
+  (setq css-fontify-colors nil)
+#+end_src
+
+Commands that Emacs disables by default are enabled again.
+
+#+begin_src emacs-lisp
+  (dolist (command '(downcase-region upcase-region narrow-to-region
+                     dired-find-alternate-file))
+    (put command 'disabled nil))
+#+end_src
+
+** Quiet messages
+
+Mutes harmless errors and the echo-area chatter of routine commands.
+
+#+begin_src emacs-lisp
+  (setq command-error-function
+        (lambda (data context caller)
+          (unless (memq (car data) '(buffer-read-only beginning-of-buffer end-of-buffer))
+            (command-error-default-function data context caller))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/quiet (fn &rest args)
+    (let ((inhibit-message t)
+          (message-log-max nil))
+      (apply fn args)))
+
+  (dolist (fn '(save-buffer kill-buffer))
+    (advice-add fn :around #'my/quiet))
+#+end_src
+
+** Session state
+
+Built-in modes that remember state between sessions. The recent files list is
+saved after every save because a daemon is rarely shut down cleanly.
+
+#+begin_src emacs-lisp
+  (recentf-mode 1)
+  (save-place-mode 1)
+  (savehist-mode 1)
+  (global-auto-revert-mode 1)
+  (pixel-scroll-precision-mode 1)
+#+end_src
+
+#+begin_src emacs-lisp
+  (add-hook 'after-save-hook (lambda () (my/quiet #'recentf-save-list)))
+  (add-hook 'emacs-startup-hook #'recentf-load-list)
+#+end_src
+
+** Performance
+
+=gcmh= manages the garbage collector while Emacs is running; the threshold is
+lowered once startup has finished.
+
+#+begin_src emacs-lisp
+  (use-package gcmh
+    :custom (gcmh-high-cons-threshold (* 64 1024 1024))
+    :config (gcmh-mode 1))
+
+  (add-hook 'emacs-startup-hook
+            (lambda () (setq gc-cons-threshold (* 16 1024 1024)))
+            90)
+#+end_src
+
+* Appearance
+
+Everything that decides how Emacs looks: frame chrome, the theme and the mode
+line.
+
+** Interface
+
+A calm frame: no blinking cursor, no truncation glyphs, and line numbers
+everywhere except in prose, terminals and Dired.
+
+#+begin_src emacs-lisp
+  (blink-cursor-mode -1)
+  (global-display-line-numbers-mode 1)
+
+  (dolist (hook '(org-mode-hook org-agenda-mode-hook term-mode-hook
+                  dired-mode-hook shell-mode-hook))
+    (add-hook hook (lambda () (display-line-numbers-mode -1))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (setq standard-display-table (make-display-table))
+  (set-display-table-slot standard-display-table 'truncation ?\s)
+  (setf (alist-get 'continuation fringe-indicator-alist) '(nil nil))
+#+end_src
+
+The header line is hidden in source-edit and capture buffers.
+
+#+begin_src emacs-lisp
+  (dolist (hook '(org-src-mode-hook org-capture-mode-hook))
+    (add-hook hook (lambda () (setq-local header-line-format nil))))
+#+end_src
+
+** Theme
+
+The theme follows the system. Colors are read from a JSON file written by an
+external tool, and every face is derived from that palette. Missing or invalid
+colors fall back to a built-in dark palette, so a broken file never breaks
+startup.
+
+*** Palette
+
+Turns the parsed JSON file into a plist of semantic colors. =my/with-palette=
+binds those names as variables so face lists can refer to them directly.
+
+#+begin_src emacs-lisp
+  (deftheme my-system)
+
+  (defconst my/theme-fallback
+    '(("BASE00" . "#1E1E2E") ("BASE01" . "#181825") ("BASE02" . "#313244")
+      ("BASE03" . "#45475A") ("BASE04" . "#585B70") ("BASE05" . "#CDD6F4")
+      ("BASE06" . "#F5E0DC") ("BASE07" . "#B4BEFE") ("BASE08" . "#F38BA8")
+      ("BASE09" . "#FAB387") ("BASE0A" . "#F9E2AF") ("BASE0B" . "#A6E3A1")
+      ("BASE0C" . "#94E2D5") ("BASE0D" . "#89B4FA") ("BASE0E" . "#CBA6F7")
+      ("BASE0F" . "#F2CDCD") ("PINK" . "#F5C2E7")))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defmacro my/with-palette (palette &rest body)
+    (declare (indent 1))
+    `(cl-destructuring-bind (&key bg bg-alt dim muted comment fg rosewater lavender
+                                  red orange yellow green teal blue mauve flamingo pink
+                                  &allow-other-keys)
+         ,palette
+       ,@body))
+#+end_src
+
+Reading the file never signals: any problem yields =nil= and the fallback is
+used.
+
+#+begin_src emacs-lisp
+  (defun my/theme-state ()
+    (when (file-readable-p my/theme-file)
+      (condition-case nil
+          (with-temp-buffer
+            (insert-file-contents my/theme-file)
+            (let ((data (json-parse-buffer :object-type 'hash-table)))
+              (and (hash-table-p data) data)))
+        (error nil))))
+#+end_src
+
+The AMOLED setting normally comes from the theme file. =my/amoled-override=
+lets a command force it on or off without touching that file. Light themes
+always ignore it, so the background can never turn black under dark text.
+
+#+begin_src emacs-lisp
+  (defvar my/amoled-override nil
+    "Overrides the AMOLED setting of the theme file: `on', `off' or nil.
+Nil follows the file.")
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/palette (state)
+    (let* ((table (and state (gethash "colors" state)))
+           (custom (when (hash-table-p table)
+                     (cl-loop for name being the hash-keys of table using (hash-values value)
+                              when (and (stringp value)
+                                        (string-match-p "\\`#[[:xdigit:]]\\{6\\}\\'" value))
+                              collect (cons name value))))
+           (colors (append custom my/theme-fallback))
+           (light (and state (equal (gethash "variant" state) "light")))
+           (file-amoled (and state (eq (gethash "amoled" state) t)))
+           (amoled (and (not light)
+                        (pcase my/amoled-override
+                          ('on t)
+                          ('off nil)
+                          (_ file-amoled)))))
+      (cl-flet ((color (name) (cdr (assoc name colors))))
+        (list :bg (if amoled "#000000" (color "BASE00"))
+              :bg-alt (if amoled "#0A0A0A" (color "BASE01"))
+              :dim (color "BASE02")
+              :muted (color "BASE03")
+              :comment (color "BASE04")
+              :fg (color "BASE05")
+              :rosewater (color "BASE06")
+              :lavender (color "BASE07")
+              :red (color "BASE08")
+              :orange (color "BASE09")
+              :yellow (color "BASE0A")
+              :green (color "BASE0B")
+              :teal (color "BASE0C")
+              :blue (color "BASE0D")
+              :mauve (color "BASE0E")
+              :flamingo (color "BASE0F")
+              :pink (color "PINK")))))
+#+end_src
+
+*** Faces
+
+Each group below is a function that takes the palette and returns face specs.
+Heights are relative, so everything scales from the single height on =default=.
+The groups are combined in the reload step.
+
+**** Base and interface
+
+#+begin_src emacs-lisp
+  (defun my/theme-base-faces (palette)
+    (my/with-palette palette
+      `((default ((t (:family "Iosevka Nerd Font" :weight semibold :height 120
+                      :foreground ,fg :background ,bg))))
+        (fixed-pitch ((t (:family "Iosevka Nerd Font" :weight semibold))))
+        (variable-pitch ((t (:family "Adwaita Sans" :weight regular))))
+        ,@(mapcar (lambda (face) `(,face ((t (:foreground ,bg :background ,bg)))))
+                  '(fringe window-divider window-divider-first-pixel
+                    window-divider-last-pixel vertical-border))
+        (header-line ((t (:foreground ,muted :background ,bg))))
+        (region ((t (:background ,dim :extend t))))
+        (secondary-selection ((t (:background ,dim))))
+        (highlight ((t (:background ,dim))))
+        (hl-line ((t (:background ,bg-alt))))
+        (shadow ((t (:foreground ,comment))))
+        (success ((t (:foreground ,green :weight bold))))
+        (warning ((t (:foreground ,yellow :weight bold))))
+        (error ((t (:foreground ,red :weight bold)))))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/theme-ui-faces (palette)
+    (my/with-palette palette
+      `((isearch ((t (:foreground ,bg :background ,yellow :weight bold))))
+        (lazy-highlight ((t (:foreground ,fg :background ,dim))))
+        (match ((t (:foreground ,green :background ,dim :weight bold))))
+        (line-number ((t (:height 0.8 :foreground ,muted :background ,bg))))
+        (line-number-current-line ((t (:foreground ,fg :weight bold))))
+        (minibuffer-prompt ((t (:foreground ,mauve :weight semibold))))
+        (vertico-current ((t (:foreground ,blue :background ,bg-alt))))
+        (link ((t (:foreground ,blue :underline nil :slant oblique))))
+        (link-visited ((t (:foreground ,mauve :underline nil :slant oblique))))
+        (show-paren-match ((t (:foreground ,blue :background ,dim :underline nil))))
+        (show-paren-match-expression ((t (:background ,bg-alt))))
+        (help-key-binding ((t (:foreground ,comment :background ,bg-alt :box nil)))))))
+#+end_src
+
+**** Syntax
+
+#+begin_src emacs-lisp
+  (defun my/theme-syntax-faces (palette)
+    (my/with-palette palette
+      `((font-lock-comment-face ((t (:foreground ,comment :slant italic))))
+        (font-lock-comment-delimiter-face ((t (:foreground ,muted :slant italic))))
+        (font-lock-doc-face ((t (:foreground ,comment :slant italic))))
+        (font-lock-keyword-face ((t (:foreground ,mauve :slant italic))))
+        (font-lock-string-face ((t (:foreground ,green))))
+        (font-lock-function-name-face ((t (:foreground ,blue))))
+        (font-lock-variable-name-face ((t (:foreground ,rosewater))))
+        (font-lock-type-face ((t (:foreground ,yellow))))
+        (font-lock-constant-face ((t (:foreground ,orange))))
+        (font-lock-builtin-face ((t (:foreground ,red))))
+        (font-lock-preprocessor-face ((t (:foreground ,pink))))
+        (font-lock-negation-char-face ((t (:foreground ,red))))
+        (font-lock-warning-face ((t (:foreground ,red :weight bold)))))))
+#+end_src
+
+**** Packages
+
+Completion, diagnostics, language server, pairs and Dired.
+
+#+begin_src emacs-lisp
+  (defun my/theme-package-faces (palette)
+    (my/with-palette palette
+      `((orderless-match-face-0 ((t (:foreground ,blue :weight bold))))
+        (orderless-match-face-1 ((t (:foreground ,mauve :weight bold))))
+        (orderless-match-face-2 ((t (:foreground ,green :weight bold))))
+        (orderless-match-face-3 ((t (:foreground ,yellow :weight bold))))
+        (company-tooltip ((t (:foreground ,comment :background ,bg-alt :weight semibold))))
+        (company-tooltip-selection ((t (:foreground ,bg :background ,lavender :weight semibold))))
+        (company-tooltip-common-selection ((t (:foreground ,red :weight semibold))))
+        (company-preview-common ((t (:foreground ,muted :background ,bg :weight semibold))))
+        (flymake-error ((t (:foreground ,red :background ,bg-alt :underline nil :weight bold))))
+        (flymake-warning ((t (:foreground ,yellow :background ,bg-alt :underline nil :weight bold))))
+        (flymake-note ((t (:foreground ,green :background ,bg-alt :underline nil :weight bold))))
+        (lsp-face-highlight-textual ((t (:background ,dim))))
+        (lsp-face-highlight-read ((t (:background ,dim :underline nil))))
+        (lsp-face-highlight-write ((t (:background ,dim :underline nil))))
+        (lsp-ui-doc-background ((t (:background ,bg-alt))))
+        (sp-show-pair-enclosing ((t (:background ,bg-alt))))
+        (sp-pair-overlay-face ((t (:background ,bg-alt))))
+        (dired-header ((t (:height 1.4 :weight normal :foreground ,lavender))))
+        (dired-directory ((t (:foreground ,blue :weight semibold)))))))
+#+end_src
+
+**** Mode line
+
+=punch-line= builds its own faces from the active theme when it loads, and in a
+daemon that happens before any frame exists. Defining them here keeps them in
+sync with the palette.
+
+#+begin_src emacs-lisp
+  (defun my/theme-modeline-faces (palette)
+    (my/with-palette palette
+      `((mode-line ((t (:foreground ,fg :background ,bg-alt :box nil :overline nil :underline nil))))
+        (mode-line-active ((t (:inherit mode-line))))
+        (mode-line-inactive ((t (:foreground ,comment :background ,bg-alt :box nil
+                                 :overline nil :underline nil))))
+        (mode-line-buffer-id ((t (:foreground ,lavender :weight bold))))
+        (mode-line-emphasis ((t (:foreground ,blue :weight bold))))
+        (mode-line-highlight ((t (:foreground ,blue :box nil)))))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/theme-punch-faces (palette)
+    (my/with-palette palette
+      `((punch-line-evil-normal-face ((t (:foreground ,bg :background ,blue :weight bold))))
+        (punch-line-evil-insert-face ((t (:foreground ,bg :background ,green :weight bold))))
+        (punch-line-evil-visual-face ((t (:foreground ,bg :background ,mauve :weight bold))))
+        (punch-line-evil-replace-face ((t (:foreground ,bg :background ,orange :weight bold))))
+        (punch-line-evil-emacs-face ((t (:foreground ,bg :background ,lavender :weight bold))))
+        (punch-line-meow-motion-face ((t (:foreground ,bg :background ,teal :weight bold))))
+        (punch-line-meow-keypad-face ((t (:foreground ,bg :background ,pink :weight bold))))
+        (punch-line-meow-insert-exit-face ((t (:foreground ,bg :background ,yellow :weight bold))))
+        (punch-line-macro-face ((t (:foreground ,bg :background ,lavender :weight bold))))
+        (punch-line-macro-recording-face ((t (:foreground ,bg :background ,red :weight bold))))
+        (punch-line-git-edited-face ((t (:foreground ,blue))))
+        (punch-line-git-added-face ((t (:foreground ,green))))
+        (punch-line-git-removed-face ((t (:foreground ,red))))
+        (punch-line-git-conflict-face ((t (:foreground ,pink))))
+        (punch-line-git-face ((t (:foreground ,comment))))
+        (punch-line-buffer-name-face ((t (:inherit mode-line-buffer-id))))
+        (punch-line-major-mode-face ((t (:foreground ,comment :weight bold))))
+        (punch-line-position-face ((t (:foreground ,orange))))
+        (punch-line-time-face ((t (:foreground ,lavender))))
+        (punch-line-project-face ((t (:foreground ,orange :weight bold))))
+        (punch-line-lsp-icon-face ((t (:foreground ,green))))
+        (punch-line-separator-face ((t (:foreground ,muted :weight normal))))
+        (punch-line-what-am-i-doing-face ((t (:foreground ,teal))))
+        (punch-line-what-am-i-doing-count-face ((t (:foreground ,green))))
+        (punch-line-system-monitor-cpu-face ((t (:foreground ,orange))))
+        (punch-line-system-monitor-memory-face ((t (:foreground ,blue))))
+        (punch-line-music-face ((t (:foreground ,comment))))
+        (punch-line-package-update-face ((t (:foreground ,yellow :weight bold))))
+        (punch-term-face ((t (:foreground ,rosewater)))))))
+#+end_src
+
+**** Evil and symbols
+
+#+begin_src emacs-lisp
+  (defun my/theme-evil-faces (palette)
+    (my/with-palette palette
+      `((evil-ex-info ((t (:foreground ,red :slant oblique))))
+        (evil-ex-substitute-matches ((t (:foreground ,bg :background ,blue
+                                         :strike-through t :underline nil))))
+        (evil-ex-substitute-replacement ((t (:foreground ,bg :background ,green :underline nil)))))))
+
+  (set-fontset-font t 'unicode (font-spec :family "material-symbols") nil 'append)
+#+end_src
+
+**** Org
+
+Org buffers are proportional, so only faces that must stay aligned (code,
+tables, dates) inherit =fixed-pitch=. Source block delimiter lines use the
+block background as their text color, which turns them into blank padding.
+The task keywords get their own faces, shared by Org and the SVG tags.
+
+#+begin_src emacs-lisp
+  (dolist (keyword '(todo question homework note))
+    (custom-declare-face (intern (format "my/org-kw-%s" keyword)) '((t nil))
+                         "Org keyword face." :group 'org-faces))
+
+  (defconst my/todo-faces
+    '(("TODO" . my/org-kw-todo)
+      ("QUESTION" . my/org-kw-question)
+      ("HOMEWORK" . my/org-kw-homework)
+      ("NOTE" . my/org-kw-note)))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/theme-org-heading-faces (palette)
+    (my/with-palette palette
+      `(,@(cl-loop for level from 1 to 8
+                   for scale in '(1.4 1.25 1.15 1.05 1.0 1.0 1.0 1.0)
+                   for color in (list lavender mauve blue teal green yellow orange pink)
+                   collect `(,(intern (format "org-level-%d" level))
+                             ((t (:height ,scale
+                                  :weight ,(if (< level 3) 'semibold 'regular)
+                                  :foreground ,color)))))
+        (org-document-title ((t (:height 1.5 :weight semibold :foreground ,blue))))
+        (org-document-info ((t (:foreground ,comment))))
+        (org-document-info-keyword ((t (:foreground ,muted))))
+        (org-meta-line ((t (:height 0.7 :slant normal :foreground ,muted)))))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/theme-org-text-faces (palette)
+    (my/with-palette palette
+      `((org-drawer ((t (:foreground ,muted))))
+        (org-property-value ((t (:foreground ,comment))))
+        (org-special-keyword ((t (:foreground ,comment :slant italic))))
+        (org-block ((t (:inherit fixed-pitch :background ,bg-alt :extend t))))
+        (org-block-begin-line ((t (:inherit nil :foreground ,bg-alt :background ,bg-alt :extend t))))
+        (org-block-end-line ((t (:inherit nil :foreground ,bg-alt :background ,bg-alt :extend t))))
+        (org-quote ((t (:foreground ,comment :background ,bg-alt :slant italic :extend t))))
+        (org-verse ((t (:foreground ,comment :background ,bg-alt :extend t))))
+        (org-verbatim ((t (:inherit fixed-pitch :foreground ,teal))))
+        (org-code ((t (:inherit fixed-pitch :foreground ,orange))))
+        (org-table ((t (:inherit fixed-pitch :foreground ,blue :background ,bg-alt))))
+        (org-formula ((t (:inherit fixed-pitch :foreground ,yellow))))
+        (org-checkbox ((t (:inherit fixed-pitch :foreground ,blue :weight bold))))
+        (org-checkbox-statistics-todo ((t (:foreground ,orange :weight bold))))
+        (org-checkbox-statistics-done ((t (:foreground ,green :weight bold))))
+        (org-date ((t (:inherit fixed-pitch :foreground ,teal :underline nil))))
+        (org-tag ((t (:foreground ,comment :weight normal))))
+        (org-priority ((t (:foreground ,red :weight bold))))
+        (org-footnote ((t (:foreground ,mauve))))
+        (org-list-dt ((t (:foreground ,yellow :weight bold))))
+        (org-ellipsis ((t (:foreground ,comment :slant normal))))
+        (org-warning ((t (:foreground ,red :weight bold)))))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/theme-org-task-faces (palette)
+    (my/with-palette palette
+      `((org-todo ((t (:height 1.1 :foreground ,teal :background ,bg :weight bold))))
+        (org-done ((t (:foreground ,comment :slant normal :strike-through nil))))
+        (org-headline-todo ((t (:foreground ,fg))))
+        (org-headline-done ((t (:foreground ,comment :strike-through nil))))
+        (org-scheduled ((t (:foreground ,green))))
+        (org-scheduled-today ((t (:foreground ,green :weight bold))))
+        (org-scheduled-previously ((t (:foreground ,orange))))
+        (org-upcoming-deadline ((t (:foreground ,yellow))))
+        (org-imminent-deadline ((t (:foreground ,red :weight bold))))
+        (org-time-grid ((t (:foreground ,muted))))
+        (my/org-kw-todo ((t (:foreground ,blue :weight bold))))
+        (my/org-kw-question ((t (:foreground ,yellow :weight bold))))
+        (my/org-kw-homework ((t (:foreground ,orange :weight bold))))
+        (my/org-kw-note ((t (:foreground ,teal :weight bold)))))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/theme-org-agenda-faces (palette)
+    (my/with-palette palette
+      `((org-agenda-date ((t (:height 1.2 :foreground ,comment :weight regular))))
+        (org-agenda-date-today ((t (:height 1.2 :foreground ,lavender :weight semibold))))
+        (org-agenda-date-weekend ((t (:height 1.2 :foreground ,mauve :weight regular))))
+        (org-agenda-done ((t (:foreground ,comment :strike-through t))))
+        (org-agenda-structure ((t (:height 1.3 :foreground ,lavender))))
+        (org-agenda-diary ((t (:foreground ,blue :weight bold))))
+        (org-agenda-calendar-event ((t (:foreground ,fg))))
+        (org-agenda-current-time ((t (:foreground ,flamingo :weight bold)))))))
+#+end_src
+
+*** Reload and watch
+
+A reload rebuilds the theme from the file, then refreshes everything that
+caches colors (cursors, SVG tags, the mode line) and applies the opacity. A
+file watch triggers it shortly after the last change, which also covers tools
+that replace the file atomically.
+
+#+begin_src emacs-lisp
+  (defconst my/theme-face-builders
+    '(my/theme-base-faces my/theme-ui-faces my/theme-syntax-faces
+      my/theme-package-faces my/theme-modeline-faces my/theme-punch-faces
+      my/theme-evil-faces my/theme-org-heading-faces my/theme-org-text-faces
+      my/theme-org-task-faces my/theme-org-agenda-faces))
+
+  (defun my/theme-faces (palette)
+    (apply #'append
+           (mapcar (lambda (builder) (funcall builder palette))
+                   my/theme-face-builders)))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/theme-cursors (palette)
+    (my/with-palette palette
+      (dolist (spec `((normal ,fg box)
+                      (visual ,comment box)
+                      (operator ,blue (bar . 6))
+                      (insert ,lavender (bar . 2))
+                      (replace ,orange hbar)
+                      (motion ,red box)
+                      (emacs ,mauve box)))
+        (set (intern (format "evil-%s-state-cursor" (car spec))) (cdr spec)))
+      (when (fboundp 'evil-refresh-cursor)
+        (evil-refresh-cursor))))
+#+end_src
+
+SVG tags are images and the mode line caches its Evil state block, so both
+must be told to redraw after a theme change.
+
+#+begin_src emacs-lisp
+  (defun my/svg-tag-refresh ()
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (bound-and-true-p svg-tag-mode)
+          (font-lock-flush)))))
+
+  (defun my/punch-line-refresh ()
+    (when (bound-and-true-p punch-line-mode)
+      (dolist (buffer (buffer-list))
+        (with-current-buffer buffer
+          (setq punch-line--modal-cache nil
+                punch-line--modal-cache-state nil)))
+      (punch-line-update-inactive-face)
+      (punch-line-invalidate-fill-cache)
+      (punch-line-update t)))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/theme-reload ()
+    (interactive)
+    (let* ((state (my/theme-state))
+           (palette (my/palette state))
+           (opacity (and state (gethash "opacity" state))))
+      (apply #'custom-theme-set-faces 'my-system (my/theme-faces palette))
+      (enable-theme 'my-system)
+      (my/theme-cursors palette)
+      (my/svg-tag-refresh)
+      (my/punch-line-refresh)
+      (when (numberp opacity)
+        (modify-all-frames-parameters
+         `((alpha-background . ,(round (* 100 (min 1.0 (max 0.0 opacity))))))))
+      (message "theme: %s" (or (and state (gethash "name" state)) "fallback"))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defvar my/theme-timer nil)
+  (defvar my/theme-watch nil)
+
+  (defun my/theme-changed (event)
+    (let ((name (file-name-nondirectory my/theme-file)))
+      (when (seq-some (lambda (file) (and file (equal (file-name-nondirectory file) name)))
+                      (nthcdr 2 event))
+        (when (timerp my/theme-timer)
+          (cancel-timer my/theme-timer))
+        (setq my/theme-timer (run-with-timer 0.2 nil #'my/theme-reload)))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (unless my/theme-watch
+    (require 'filenotify)
+    (setq my/theme-watch
+          (with-demoted-errors "theme: %S"
+            (file-notify-add-watch (file-name-directory my/theme-file) '(change)
+                                   #'my/theme-changed))))
+
+  (my/theme-reload)
+#+end_src
+
+** Mode line
+
+=punch-line= draws the mode line. Nix builds it from GitHub, so this section
+only configures it. It is loaded when the first graphical frame appears,
+because it computes faces from the current frame, and terminal frames keep the
+stock mode line. Segments that need the network or other platforms are
+switched off.
+
+*** Diagnostics segment
+
+=punch-line= only knows Flycheck, while this configuration uses Flymake. These
+functions replace its diagnostics segment with Flymake counts and cache them
+briefly per buffer.
+
+#+begin_src emacs-lisp
+  (defun my/punch-diagnostics-part (count icon face)
+    (when (> count 0)
+      (propertize (format "%s %d" (nerd-icons-codicon icon) count)
+                  'face `(:inherit ,face))))
+
+  (defun my/punch-diagnostics-string ()
+    (let ((errors 0) (warnings 0) (notes 0))
+      (dolist (diagnostic (flymake-diagnostics))
+        (pcase (flymake-diagnostic-type diagnostic)
+          (:error (cl-incf errors))
+          (:warning (cl-incf warnings))
+          (_ (cl-incf notes))))
+      (let ((parts (delq nil (list (my/punch-diagnostics-part notes "nf-cod-lightbulb" 'success)
+                                   (my/punch-diagnostics-part warnings "nf-cod-warning" 'warning)
+                                   (my/punch-diagnostics-part errors "nf-cod-error" 'error)))))
+        (when parts
+          (string-join parts " ")))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defvar-local my/punch-diagnostics-cache nil)
+
+  (defun my/punch-diagnostics ()
+    (when (and (bound-and-true-p punch-show-flycheck-info)
+               (bound-and-true-p flymake-mode))
+      (let ((now (float-time)))
+        (unless (and my/punch-diagnostics-cache
+                     (< (- now (car my/punch-diagnostics-cache)) 1.0))
+          (setq my/punch-diagnostics-cache (cons now (my/punch-diagnostics-string))))
+        (cdr my/punch-diagnostics-cache))))
+#+end_src
+
+*** Loading
+
+Hooks are removed only after a successful start, so a failure is reported in
+=*Messages*= and retried on the next frame instead of failing silently.
+
+#+begin_src emacs-lisp
+  (defun my/punch-line-start ()
+    "Load `punch-line' and enable it in the first graphical frame."
+    (when (and (display-graphic-p) (not (bound-and-true-p punch-line-mode)))
+      (condition-case err
+          (progn
+            (require 'punch-line)
+            (punch-line-mode 1)
+            (remove-hook 'server-after-make-frame-hook #'my/punch-line-start)
+            (remove-hook 'emacs-startup-hook #'my/punch-line-start))
+        (error (message "punch-line failed to start: %s"
+                        (error-message-string err))))))
+
+  (add-hook 'server-after-make-frame-hook #'my/punch-line-start)
+  (add-hook 'emacs-startup-hook #'my/punch-line-start)
+#+end_src
+
+*** Configuration
+
+#+begin_src emacs-lisp
+  (use-package punch-line
+    :commands punch-line-mode
+    :init
+    ;; punch-line-battery.el calls `battery-update-handler' while loading, which
+    ;; signals an error when Emacs finds no battery (desktops, VMs) and aborts
+    ;; the whole `require'. A no-op status function makes that call harmless and
+    ;; leaves real batteries alone, because it is only set when none was found.
+    (with-eval-after-load 'battery
+      (unless battery-status-function
+        (setq battery-status-function #'ignore)))
+    :custom
+    (punch-line-task-file (my/cache "task-list.el"))
+    (punch-line-modal-size 'small)
+    (punch-line-modal-divider-style 'block)
+    (punch-line-left-separator "    ")
+    (punch-line-right-separator "    ")
+    (punch-show-weather-info nil)
+    (punch-show-package-info nil)
+    (punch-show-copilot-info nil)
+    :config
+    (advice-add 'punch-flycheck-info :override #'my/punch-diagnostics)
+    ;; punch-line-weather registers focus hooks at load time that fetch weather
+    ;; even when the weather segment is off.
+    (punch-weather-disable-focus-hooks))
+#+end_src
+
+Small cosmetic fixes: space before the file icon, and the =Git@= prefix that
+Emacs 30+ puts in front of the branch name is removed.
+
+#+begin_src emacs-lisp
+  (with-eval-after-load 'punch-line
+    (advice-add 'punch-buffer-name :filter-return
+                (lambda (name)
+                  (if (and (stringp name) (not (string-empty-p name)))
+                      (concat "  " name)
+                    name)))
+    (advice-add 'vc-git-mode-line-string :filter-return
+                (lambda (string)
+                  (if (stringp string)
+                      (replace-regexp-in-string "\\`Git@" "" string)
+                    string))))
+#+end_src
+
+* Functions
+
+Shared helper commands used by hooks and keybindings. Helpers that belong to a
+single feature live next to that feature instead.
+
+** General
+
+#+begin_src emacs-lisp
+  (defun my/clear ()
+    (interactive)
+    (redraw-display)
+    (evil-force-normal-state)
+    (when (bound-and-true-p iedit-mode)
+      (iedit-mode -1)))
+
+  (defun my/indent-buffer ()
+    (interactive)
+    (indent-region (point-min) (point-max)))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/google-this ()
+    (interactive)
+    (browse-url
+     (concat "https://www.google.com/search?q="
+             (url-hexify-string
+              (if (use-region-p)
+                  (buffer-substring-no-properties (region-beginning) (region-end))
+                (read-string "Google: "))))))
+
+  (defun my/reload-config ()
+    (interactive)
+    (load (locate-user-emacs-file "init.el") nil t))
+
+  (defun my/file ()
+    (or buffer-file-name (user-error "Buffer is not visiting a file")))
+#+end_src
+
+** Interface toggles
+
+Commands that show, hide or switch parts of the interface. Menu bar and mode
+line toggles remember their own state, so they never depend on reading it back
+from Emacs. The menu bar starts hidden, so its first toggle shows it.
+
+#+begin_src emacs-lisp
+  (defvar my/menu-bar-flip 1
+    "Argument the next `my/toggle-menu-bar' passes to `menu-bar-mode'.")
+
+  (defun my/toggle-menu-bar ()
+    "Show or hide the menu bar."
+    (interactive)
+    (menu-bar-mode my/menu-bar-flip)
+    (setq my/menu-bar-flip (* -1 my/menu-bar-flip)))
+#+end_src
+
+Hiding the mode line saves the current default format and sets it to =nil=;
+showing it puts the saved format back.
+
+#+begin_src emacs-lisp
+  (defvar my/mode-line-saved nil
+    "Default `mode-line-format' saved while the mode line is hidden.")
+
+  (defvar my/mode-line-hidden nil
+    "Non-nil while `my/toggle-mode-line' has hidden the mode line.")
+
+  (defun my/toggle-mode-line ()
+    "Show or hide the mode line in every buffer that uses the default format."
+    (interactive)
+    (if my/mode-line-hidden
+        (progn (setq-default mode-line-format my/mode-line-saved)
+               (setq my/mode-line-hidden nil))
+      (setq my/mode-line-saved (default-value 'mode-line-format)
+            my/mode-line-hidden t)
+      (setq-default mode-line-format nil))
+    (force-mode-line-update t))
+#+end_src
+
+Property drawers are hidden in Org buffers by default; the toggle reveals them
+(drawn as SVG labels) or hides them again.
+
+#+begin_src emacs-lisp
+  (defun my/toggle-property-drawers ()
+    "Show or hide property drawers in the current Org buffer."
+    (interactive)
+    (unless (derived-mode-p 'org-mode)
+      (user-error "Not an Org buffer"))
+    (if (invisible-p 'my-drawer)
+        (remove-from-invisibility-spec 'my-drawer)
+      (add-to-invisibility-spec 'my-drawer)
+      (my/org-hide-property-drawers))
+    (force-window-update (current-buffer)))
+#+end_src
+
+AMOLED mode forces a true black background on dark themes. The override lasts
+until Emacs restarts; light themes ignore it.
+
+#+begin_src emacs-lisp
+  (defun my/amoled-set (value)
+    "Set `my/amoled-override' to VALUE and rebuild the theme."
+    (setq my/amoled-override value)
+    (my/theme-reload))
+
+  (defun my/amoled-on ()
+    "Force AMOLED (true black) backgrounds on dark themes."
+    (interactive)
+    (my/amoled-set 'on))
+
+  (defun my/amoled-off ()
+    "Force regular backgrounds, ignoring the theme file."
+    (interactive)
+    (my/amoled-set 'off))
+#+end_src
+
+** Buffers
+
+Next and previous buffer skip starred buffers. The loop stops once it has
+cycled back to where it started, so it cannot run forever.
+
+#+begin_src emacs-lisp
+  (defun my/change-buffer (change)
+    (let ((start (current-buffer)))
+      (funcall change)
+      (while (and (not (eq (current-buffer) start))
+                  (string-prefix-p "*" (buffer-name)))
+        (funcall change))))
+
+  (defun my/next-buffer ()
+    (interactive)
+    (my/change-buffer #'next-buffer))
+
+  (defun my/previous-buffer ()
+    (interactive)
+    (my/change-buffer #'previous-buffer))
+#+end_src
+
+** Terminal and external programs
+
+The terminal comes from =$TERMINAL= (the client's environment wins over the
+daemon's) and then a list of common terminals. Terminals that need different
+flags to run a command are listed in one table.
+
+#+begin_src emacs-lisp
+  (defconst my/terminal-run-flags
+    '(("kitty") ("foot") ("gnome-terminal" "--") ("wezterm" "start" "--")))
+
+  (defun my/terminal ()
+    (seq-find #'executable-find
+              (delq nil (list (or (getenv "TERMINAL" (selected-frame)) (getenv "TERMINAL"))
+                              "x-terminal-emulator" "foot" "kitty" "alacritty" "wezterm"
+                              "ghostty" "gnome-terminal" "konsole" "xterm"))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/run-external (&rest command)
+    (let ((default-directory (if (file-remote-p default-directory)
+                                 (expand-file-name "~/")
+                               default-directory)))
+      (make-process :name (car command)
+                    :command command
+                    :connection-type 'pipe
+                    :noquery t)))
+
+  (defun my/open-terminal (&rest command)
+    (let* ((terminal (or (my/terminal) (user-error "No terminal found; set $TERMINAL")))
+           (flags (alist-get (file-name-nondirectory terminal) my/terminal-run-flags
+                             '("-e") nil #'equal)))
+      (apply #'my/run-external terminal (when command (append flags command)))))
+
+  (defun my/open-in-term ()
+    (interactive)
+    (my/open-terminal))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/open-current-file-in-nvim ()
+    (interactive)
+    (unless (executable-find "nvim") (user-error "nvim is not in PATH"))
+    (my/open-terminal "nvim" (format "+%d" (line-number-at-pos)) (my/file)))
+
+  (defun my/open-externally (ask)
+    (interactive "P")
+    (if ask
+        (call-process-shell-command
+         (concat (read-shell-command "Open with: ") " " (shell-quote-argument (my/file)))
+         nil 0)
+      (my/run-external "xdg-open" (my/file))))
+#+end_src
+
+* Editing
+
+Modal editing, completion and the small tools that shape how text is edited.
+
+** Evil
+
+Vim emulation: the core package, its extensions, undo handling and Org
+integration.
+
+*** Core
+
+#+begin_src emacs-lisp
+  (use-package evil
+    :init
+    (setq evil-want-keybinding nil
+          evil-undo-system 'undo-fu
+          evil-want-C-i-jump nil
+          evil-want-C-u-scroll t
+          evil-want-C-d-scroll t
+          evil-want-fine-undo t
+          evil-want-Y-yank-to-eol t
+          evil-echo-state nil)
+    :config
+    (evil-mode 1)
+    (evil-global-set-key 'motion "j" #'evil-next-visual-line)
+    (evil-global-set-key 'motion "k" #'evil-previous-visual-line)
+    (evil-set-initial-state 'messages-buffer-mode 'normal)
+    (dolist (key '("C-h" "C-l"))
+      (keymap-unset evil-insert-state-map key t)))
+#+end_src
+
+*** Extensions
+
+#+begin_src emacs-lisp
+  (use-package evil-collection
+    :after evil
+    :config (evil-collection-init))
+
+  (use-package evil-commentary
+    :after evil
+    :config (evil-commentary-mode 1))
+
+  (use-package evil-surround
+    :after evil
+    :config (global-evil-surround-mode 1))
+#+end_src
+
+#+begin_src emacs-lisp
+  (use-package evil-escape
+    :after evil
+    :custom
+    (evil-escape-key-sequence "jk")
+    (evil-escape-delay 0.2)
+    (evil-escape-excluded-states '(normal visual motion))
+    (evil-escape-excluded-major-modes '(org-agenda-mode))
+    :config (evil-escape-mode 1))
+
+  (use-package evil-textobj-anyblock
+    :after evil
+    :config
+    (keymap-set evil-inner-text-objects-map "u" #'evil-textobj-anyblock-inner-block)
+    (keymap-set evil-outer-text-objects-map "u" #'evil-textobj-anyblock-a-block))
+#+end_src
+
+*** Undo
+
+#+begin_src emacs-lisp
+  (use-package undo-fu)
+
+  (use-package undo-fu-session
+    :custom
+    (undo-fu-session-directory (my/cache "undo/"))
+    (undo-fu-session-incompatible-files '("/COMMIT_EDITMSG\\'" "/git-rebase-todo\\'"))
+    :config (undo-fu-session-global-mode 1))
+#+end_src
+
+*** Org integration
+
+#+begin_src emacs-lisp
+  (use-package evil-org
+    :after org
+    :hook (org-mode . evil-org-mode)
+    :config
+    (require 'evil-org-agenda)
+    (evil-org-agenda-set-keys)
+    (add-hook 'evil-org-mode-hook #'evil-org-set-key-theme))
+#+end_src
+
+** Completion and search
+
+*** Minibuffer
+
+=vertico= shows a short list in the minibuffer and =orderless= matches input
+in any order. The minibuffer uses the proportional font.
+
+#+begin_src emacs-lisp
+  (use-package orderless
+    :custom
+    (completion-styles '(orderless basic))
+    (completion-category-defaults nil)
+    (completion-category-overrides '((file (styles partial-completion)))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (use-package vertico
+    :custom
+    (vertico-count 5)
+    (vertico-resize t)
+    (vertico-cycle t)
+    :config
+    (require 'vertico-directory)
+    (require 'vertico-reverse)
+    (add-hook 'minibuffer-setup-hook
+              (lambda () (setq-local face-remapping-alist '((default variable-pitch)))))
+    (vertico-mode 1)
+    (vertico-reverse-mode 1))
+#+end_src
+
+*** Search and actions
+
+#+begin_src emacs-lisp
+  (use-package consult
+    :custom
+    (xref-show-xrefs-function #'consult-xref)
+    (xref-show-definitions-function #'consult-xref)
+    (consult-async-min-input 1)
+    (consult-narrow-key "<")
+    :config
+    (add-to-list 'consult-buffer-filter "\\*.*\\*")
+    (consult-customize
+     consult-theme consult-buffer :preview-key nil
+     consult-recent-file :preview-key "C-h"
+     consult-ripgrep consult-git-grep consult-grep consult-bookmark consult-xref
+     :preview-key '(:debounce 0.4 any)))
+
+  (use-package embark)
+  (use-package embark-consult
+    :after (embark consult))
+#+end_src
+
+*** Icons
+
+#+begin_src emacs-lisp
+  (use-package nerd-icons)
+
+  (use-package nerd-icons-completion
+    :after nerd-icons
+    :config (nerd-icons-completion-mode 1))
+
+  (use-package nerd-icons-dired
+    :hook (dired-mode . nerd-icons-dired-mode))
+#+end_src
+
+*** In-buffer completion
+
+Company completes in code buffers, but not in Org or shells.
+
+#+begin_src emacs-lisp
+  (use-package company
+    :custom
+    (company-minimum-prefix-length 1)
+    (company-selection-wrap-around t)
+    (company-tooltip-align-annotations t)
+    (company-format-margin-function nil)
+    (company-global-modes '(not org-mode shell-mode))
+    :config (global-company-mode 1))
+#+end_src
+
+*** Help and navigation
+
+=helpful= replaces the built-in help commands.
+
+#+begin_src emacs-lisp
+  (use-package helpful
+    :bind (([remap describe-function] . helpful-callable)
+           ([remap describe-variable] . helpful-variable)
+           ([remap describe-key] . helpful-key)
+           ([remap describe-command] . helpful-command)))
+
+  (use-package devdocs)
+  (use-package avy)
+  (use-package iedit)
+#+end_src
+
+** Editing tools
+
+*** Structure
+
+Pairs, snippets and moving text around.
+
+#+begin_src emacs-lisp
+  (use-package smartparens
+    :hook ((text-mode prog-mode org-mode) . smartparens-mode)
+    :config
+    (require 'smartparens-config)
+    (sp-pair "$$" "$$"))
+
+  (use-package yasnippet
+    :config (yas-global-mode 1))
+  (use-package yasnippet-snippets
+    :after yasnippet)
+
+  (use-package drag-stuff
+    :hook ((org-mode prog-mode) . drag-stuff-mode))
+#+end_src
+
+*** Visual aids
+
+#+begin_src emacs-lisp
+  (use-package rainbow-mode
+    :hook ((prog-mode text-mode org-mode) . rainbow-mode))
+  (use-package rainbow-delimiters
+    :hook ((org-mode prog-mode text-mode) . rainbow-delimiters-mode))
+
+  (use-package popper
+    :custom
+    (popper-reference-buffers
+     '("\\*Messages\\*" "\\*gud-test\\*" "Output\\*$" "\\*Warnings\\*"
+       help-mode compilation-mode))
+    :config (popper-mode 1))
+#+end_src
+
+*** Files
+
+Dired reuses one buffer, hides details and uses the proportional font. Some
+file types open in external programs.
+
+#+begin_src emacs-lisp
+  (use-package dired
+    :custom
+    (dired-kill-when-opening-new-dired-buffer t)
+    (dired-listing-switches "-Agho --group-directories-first")
+    :hook ((dired-mode . dired-hide-details-mode)
+           (dired-mode . variable-pitch-mode)))
+
+  (use-package openwith
+    :custom
+    (openwith-associations '(("\\.pdf\\'" "evince" (file))
+                             ("\\.pptx\\'" "libreoffice" (file))
+                             ("\\.docx\\'" "libreoffice" (file))))
+    :config (openwith-mode 1))
+#+end_src
+
+* Programming
+
+Language servers, formatting, syntax highlighting and language-specific setup.
+
+** Language servers
+
+=lsp-mode= starts in programming buffers except Emacs Lisp and remote files,
+with most of its UI switched off: diagnostics go through Flymake and completion
+through Company.
+
+#+begin_src emacs-lisp
+  (defun my/lsp-maybe ()
+    (unless (or (derived-mode-p 'emacs-lisp-mode 'lisp-interaction-mode)
+                (file-remote-p default-directory))
+      (lsp-deferred)))
+#+end_src
+
+#+begin_src emacs-lisp
+  (use-package lsp-mode
+    :hook (prog-mode . my/lsp-maybe)
+    :commands (lsp lsp-deferred)
+    :custom
+    (read-process-output-max (* 1024 1024))
+    (lsp-idle-delay 0.1)
+    (lsp-diagnostics-provider :flymake)
+    (lsp-completion-provider :none)
+    (lsp-completion-show-detail nil)
+    (lsp-lens-enable nil)
+    (lsp-headerline-breadcrumb-enable nil)
+    (lsp-modeline-code-actions-enable nil)
+    (lsp-modeline-diagnostics-enable nil)
+    (lsp-eldoc-enable-hover nil)
+    (lsp-signature-auto-activate nil)
+    (lsp-signature-render-documentation nil)
+    (lsp-warn-no-matched-clients nil))
+#+end_src
+
+#+begin_src emacs-lisp
+  (use-package lsp-ui
+    :commands (lsp-ui-mode lsp-ui-doc-glance)
+    :custom
+    (lsp-ui-doc-enable nil)
+    (lsp-ui-doc-position 'at-point)
+    (lsp-ui-doc-show-with-cursor nil)
+    (lsp-ui-doc-show-with-mouse nil)
+    (lsp-ui-sideline-enable nil))
+
+  (setopt flymake-fringe-indicator-position nil)
+#+end_src
+
+** Formatting
+
+Programming buffers are formatted with =format-all=, with a few formatters
+pinned per language.
+
+#+begin_src emacs-lisp
+  (use-package format-all
+    :hook (prog-mode . format-all-mode)
+    :config
+    (setq-default format-all-formatters
+                  '(("C" (astyle "--mode=c"))
+                    ("Shell" (shfmt "-i" "4" "-ci")))))
+#+end_src
+
+** Tree-sitter
+
+Grammars come from Nix, so nothing is downloaded at runtime. Each classic
+major mode is remapped to its tree-sitter variant, and font locking is set to
+the maximum level.
+
+#+begin_src emacs-lisp
+  (require 'treesit)
+  (setq treesit-font-lock-level 4)
+#+end_src
+
+Shell, Python and C-family languages:
+
+#+begin_src emacs-lisp
+  (add-to-list 'treesit-language-source-alist '(bash "https://github.com/tree-sitter/tree-sitter-bash.git"))
+  (add-to-list 'major-mode-remap-alist '(sh-mode . bash-ts-mode))
+  (add-to-list 'major-mode-remap-alist '(shell-script-mode . bash-ts-mode))
+
+  (add-to-list 'treesit-language-source-alist '(python "https://github.com/tree-sitter/tree-sitter-python.git"))
+  (add-to-list 'major-mode-remap-alist '(python-mode . python-ts-mode))
+
+  (add-to-list 'treesit-language-source-alist '(cpp "https://github.com/tree-sitter/tree-sitter-cpp.git"))
+  (add-to-list 'major-mode-remap-alist '(c++-mode . c++-ts-mode))
+
+  (add-to-list 'treesit-language-source-alist '(c "https://github.com/tree-sitter/tree-sitter-c"))
+  (add-to-list 'major-mode-remap-alist '(c-mode . c-ts-mode))
+#+end_src
+
+Web languages, Nix and Markdown. Nix has no built-in tree-sitter mode, so
+=nix-ts-mode= comes from a separate package.
+
+#+begin_src emacs-lisp
+  (add-to-list 'treesit-language-source-alist '(css "https://github.com/tree-sitter/tree-sitter-css.git"))
+  (add-to-list 'major-mode-remap-alist '(css-mode . css-ts-mode))
+
+  (add-to-list 'treesit-language-source-alist '(html "https://github.com/tree-sitter/tree-sitter-html.git"))
+  (add-to-list 'major-mode-remap-alist '(html-mode . html-ts-mode))
+
+  (add-to-list 'treesit-language-source-alist '(nix "https://github.com/nix-community/tree-sitter-nix"))
+  (add-to-list 'auto-mode-alist '("\\.nix\\'" . nix-ts-mode))
+
+  (when (fboundp 'markdown-ts-mode)
+    (add-to-list 'auto-mode-alist '("\\.md\\'" . markdown-ts-mode)))
+#+end_src
+
+** Dart and Flutter
+
+#+begin_src emacs-lisp
+  (use-package dart-mode)
+
+  (use-package flutter
+    :after dart-mode)
+
+  (use-package lsp-dart
+    :after (lsp-mode dart-mode))
+#+end_src
+
+** LaTeX
+
+#+begin_src emacs-lisp
+  (defun my/latex-setup ()
+    (visual-line-mode 1)
+    (turn-on-reftex)
+    (prettify-symbols-mode 1)
+    (lsp-deferred))
+
+  (defun my/compile-latex ()
+    (interactive)
+    (compile (format "pdflatex %s" (shell-quote-argument (my/file)))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (use-package auctex
+    :defer t)
+
+  (add-hook 'LaTeX-mode-hook #'my/latex-setup)
+#+end_src
+
+* Org
+
+Everything for notes and tasks: helper commands, appearance, core setup, the
+agenda, capture and Roam.
+
+** Helpers
+
+Commands for scheduling, copying code and exporting. =my/org-babel-edit=
+tangles the block at point and opens it as if it were the real file, so the
+language server works inside it.
+
+#+begin_src emacs-lisp
+  (defun my/org-schedule-tomorrow ()
+    (interactive)
+    (org-schedule nil "+1d"))
+
+  (defun my/org-copy-src-blocks ()
+    (interactive)
+    (let ((code ""))
+      (save-restriction
+        (org-narrow-to-subtree)
+        (org-babel-map-src-blocks nil
+          (setq code (concat code (org-no-properties body)))))
+      (when (string-empty-p code)
+        (user-error "No source blocks in this subtree"))
+      (kill-new code)
+      (message "Copied source blocks")))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/org-babel-edit ()
+    (interactive)
+    (let* ((target (cdr (assq :tangle (nth 2 (org-babel-get-src-block-info)))))
+           (file (and target (not (equal target "no"))
+                      (expand-file-name target (file-name-directory (my/file))))))
+      (unless file (user-error "Source block has no :tangle target"))
+      (org-babel-tangle '(4))
+      (org-edit-special)
+      (setq-local buffer-file-name file)
+      (lsp-deferred)))
+
+  (defun my/org-to-docx ()
+    (interactive)
+    (let* ((file (my/file))
+           (docx (format "%s-%s.docx" (file-name-sans-extension file)
+                         (format-time-string "%F-%H%M%S"))))
+      (if (zerop (call-process "pandoc" nil nil nil "-N" "-f" "org" file "-o" docx))
+          (message "Exported %s" docx)
+        (user-error "pandoc failed"))))
+#+end_src
+
+** Appearance
+
+Org buffers are proportional and indented. =org-appear= reveals emphasis
+markers only while the cursor is on them.
+
+#+begin_src emacs-lisp
+  (use-package org-appear
+    :hook (org-mode . org-appear-mode))
+#+end_src
+
+** SVG tags
+
+Replaces plain Org text (stars, keywords, priorities, progress cookies,
+timestamps, tags, header lines and property drawers) with SVG images through
+=svg-tag-mode=. It needs a graphical frame with SVG support; otherwise the
+plain text stays. If a tag fails to draw, the plain text is shown and the error
+goes to =*Messages*=. Moving the cursor onto a tag shows its text again for
+editing.
+
+*** Metrics
+
+Sizes are derived from the default font. The tunables at the top adjust text
+size, padding, line width, vertical centering and the width of progress bars.
+
+#+begin_src emacs-lisp
+  (defvar my/svg-text-scale 0.85)
+  (defvar my/svg-title-scale 1.5)
+  (defvar my/svg-padding 0.7)
+  (defvar my/svg-stroke 1.5)
+  (defvar my/svg-cap-height 0.72)
+  (defvar my/svg-progress-chars 12.0
+    "Minimum width, in characters, of a pill that shows a progress bar.")
+  (defvar my/svg-metrics-cache (make-hash-table :test #'equal))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/svg-metrics (&optional scale)
+    (let* ((scale (or scale my/svg-text-scale))
+           (family (face-attribute 'default :family nil 'default))
+           (height (face-attribute 'default :height nil 'default))
+           (points (max 6 (round (* (/ height 10.0) scale))))
+           (key (cons family points)))
+      (unless (and (stringp family) (numberp height))
+        (error "svg tag: no usable default font"))
+      (or (gethash key my/svg-metrics-cache)
+          (let ((info (font-info (format "%s-%d" family points))))
+            (unless info
+              (error "svg tag: font not found: %s" family))
+            (puthash key
+                     (list :family family
+                           :size (aref info 2)
+                           :char (let ((width (aref info 11)))
+                                   (if (> width 0) width (round (* 0.55 (aref info 2))))))
+                     my/svg-metrics-cache)))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/svg-color (face)
+    (svg-lib-convert-color (face-attribute face :foreground nil 'default)))
+
+  (defun my/svg-height ()
+    (float (min (frame-char-height)
+                (round (* (plist-get (my/svg-metrics) :size) 1.5)))))
+
+  (defun my/svg-pill-width (label &optional progress)
+    "Return the width of a pill for LABEL.
+A pill with PROGRESS is at least `my/svg-progress-chars' characters wide."
+    (let* ((char (plist-get (my/svg-metrics) :char))
+           (text (+ (* (length (string-trim label)) char) (* 2 my/svg-padding char))))
+      (if progress
+          (max text (* my/svg-progress-chars char))
+        text)))
+#+end_src
+
+*** Shapes
+
+A pill is a rounded outline or filled shape with centered text and an optional
+progress bar. Either end can be round or square so two pills can be joined.
+
+#+begin_src emacs-lisp
+  (defun my/svg-path (x0 y0 x1 y1 rl rr &optional open-left)
+    (if open-left
+        (format "M%f,%f H%f A%f,%f 0 0 1 %f,%f V%f A%f,%f 0 0 1 %f,%f H%f"
+                x0 y0 (- x1 rr)
+                rr rr x1 (+ y0 rr) (- y1 rr)
+                rr rr (- x1 rr) y1 x0)
+      (format "M%f,%f H%f A%f,%f 0 0 1 %f,%f V%f A%f,%f 0 0 1 %f,%f H%f A%f,%f 0 0 1 %f,%f V%f A%f,%f 0 0 1 %f,%f Z"
+              (+ x0 rl) y0 (- x1 rr)
+              rr rr x1 (+ y0 rr) (- y1 rr)
+              rr rr (- x1 rr) y1 (+ x0 rl)
+              rl rl x0 (- y1 rl) (+ y0 rl)
+              rl rl (+ x0 rl) y0)))
+#+end_src
+
+#+begin_src emacs-lisp
+  (cl-defun my/svg-draw-pill (svg label face x &key filled (left 'round) (right 'round)
+                                  progress open-left)
+    "Draw LABEL on SVG as a pill whose left edge is at X and return its width."
+    (let* ((label (string-trim label))
+           (metrics (my/svg-metrics))
+           (size (plist-get metrics :size))
+           (height (my/svg-height))
+           (width (my/svg-pill-width label progress))
+           (radius (* height 0.28))
+           (rl (if (eq left 'round) radius 0))
+           (rr (if (eq right 'round) radius 0))
+           (stroke my/svg-stroke)
+           (color (my/svg-color face))
+           (background (svg-lib-convert-color
+                        (face-attribute 'default :background nil 'default))))
+      (if filled
+          (svg-node svg 'path :d (my/svg-path x 0 (+ x width) height rl rr) :fill color)
+        (let ((inset (/ stroke 2.0)))
+          (svg-node svg 'path
+                    :d (my/svg-path (if open-left x (+ x inset)) inset
+                                    (- (+ x width) inset) (- height inset)
+                                    (max 0 (- rl inset)) (max 0 (- rr inset))
+                                    open-left)
+                    :fill "none" :stroke color :stroke-width stroke)))
+      (when (and progress (> progress 0))
+        (let ((inner (max 0 (- radius stroke))))
+          (svg-node svg 'path
+                    :d (my/svg-path (+ x stroke) stroke
+                                    (+ x stroke (* progress (- width (* 2 stroke))))
+                                    (- height stroke)
+                                    inner (if (>= progress 1) inner 0))
+                    :fill color :fill-opacity 0.35)))
+      (svg-text svg label
+                :font-family (plist-get metrics :family)
+                :font-size size
+                :font-weight (if filled 700 600)
+                :fill (if filled background color)
+                :text-anchor "middle"
+                :x (+ x (/ width 2.0))
+                :y (+ (/ height 2.0) (* size my/svg-cap-height 0.5)))
+      width))
+#+end_src
+
+*** Images
+
+Builders that turn a piece of text into an image: single pills, joined pairs,
+heading markers and header lines.
+
+#+begin_src emacs-lisp
+  (cl-defun my/svg-pill (label face &key filled (left 'round) (right 'round)
+                               progress open-left (gap 0))
+    (let* ((char (plist-get (my/svg-metrics) :char))
+           (svg (svg-create (+ (my/svg-pill-width label progress) (* gap char))
+                            (my/svg-height))))
+      (my/svg-draw-pill svg label face 0 :filled filled :left left :right right
+                        :progress progress :open-left open-left)
+      (svg-image svg :ascent 'center)))
+
+  (defun my/svg-pair (first second face filled-second)
+    "Return one image of FIRST (outlined) joined to SECOND (filled or outlined)."
+    (let* ((first-width (my/svg-pill-width first))
+           (svg (svg-create (+ first-width (my/svg-pill-width second))
+                            (my/svg-height))))
+      (my/svg-draw-pill svg first face 0 :right 'square)
+      (my/svg-draw-pill svg second face first-width
+                        :filled filled-second :left 'square
+                        :open-left (not filled-second))
+      (svg-image svg :ascent 'center)))
+#+end_src
+
+Heading markers depend on the level: dot, ring, diamond, outlined diamond,
+then a small dot.
+
+#+begin_src emacs-lisp
+  (defun my/svg-diamond (cx cy radius)
+    (list (cons cx (- cy radius)) (cons (+ cx radius) cy)
+          (cons cx (+ cy radius)) (cons (- cx radius) cy)))
+
+  (defun my/svg-star (level)
+    "Return the marker for a heading of LEVEL."
+    (let* ((height (my/svg-height))
+           (width (float (frame-char-width)))
+           (cx (/ width 2.0))
+           (cy (/ height 2.0))
+           (radius (* height 0.24))
+           (stroke my/svg-stroke)
+           (inset (/ stroke 2.0))
+           (color (my/svg-color (intern (format "org-level-%d" (1+ (mod (1- level) 8))))))
+           (svg (svg-create width height)))
+      (pcase level
+        (1 (svg-circle svg cx cy radius :fill color))
+        (2 (svg-circle svg cx cy (- radius inset)
+                       :fill "none" :stroke color :stroke-width stroke))
+        (3 (svg-polygon svg (my/svg-diamond cx cy (* radius 1.15)) :fill color))
+        (4 (svg-polygon svg (my/svg-diamond cx cy (- (* radius 1.15) inset))
+                        :fill "none" :stroke color :stroke-width stroke))
+        (_ (svg-circle svg cx cy (* radius 0.55) :fill color)))
+      (svg-image svg :ascent 'center)))
+#+end_src
+
+Header lines: the title is a large bold text after an accent bar. The date and
+property lines are a small outlined label joined to their value, which keeps
+long =#+PROPERTY:= lines compact and quiet.
+
+#+begin_src emacs-lisp
+  (defun my/svg-title (text)
+    "Return the document title: bold text after a rounded accent bar."
+    (let* ((metrics (my/svg-metrics my/svg-title-scale))
+           (size (plist-get metrics :size))
+           (char (plist-get metrics :char))
+           (height (float (round (* size 1.8))))
+           (bar 4.0)
+           (indent (+ bar (* char 0.8)))
+           (width (+ indent (* (length text) char) char))
+           (color (my/svg-color 'org-document-title))
+           (svg (svg-create width height)))
+      (svg-rectangle svg 0 (* height 0.15) bar (* height 0.7)
+                     :rx (/ bar 2) :fill color)
+      (svg-text svg text
+                :font-family (plist-get metrics :family)
+                :font-size size
+                :font-weight 700
+                :fill color
+                :x indent
+                :y (+ (/ height 2.0) (* size my/svg-cap-height 0.5)))
+      (svg-image svg :ascent 'center)))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/svg-date-annotation (value)
+    "Return the document date as a small outlined \"date\" label joined to VALUE."
+    (my/svg-pair "date" (replace-regexp-in-string "\\`[<[]\\|[]>]\\'" "" value)
+                 'shadow nil))
+
+  (defun my/svg-property-annotation (value)
+    "Return a `#+PROPERTY:' line as an outlined \"property\" label joined to VALUE."
+    (my/svg-pair "property" value 'shadow nil))
+#+end_src
+
+*** Entry helpers
+
+An entry is a regexp whose first group is the text to replace, plus a function
+that returns the image for it. Entries never signal: on any error the plain
+text is kept.
+
+#+begin_src emacs-lisp
+  (defconst my/svg-date-re "[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}")
+  (defconst my/svg-tag-char "[[:alnum:]_@#%]")
+
+  (defun my/svg-entry (regexp function)
+    "Return an `svg-tag-tags' entry. If FUNCTION fails, the plain text is shown."
+    (cons regexp
+          (list (lambda (tag)
+                  (condition-case err
+                      (save-match-data (funcall function tag))
+                    (error (message "svg tag: %s" (error-message-string err))
+                           tag))))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/svg-ci (word)
+    "Return a regexp matching WORD in any case."
+    (mapconcat (lambda (char) (format "[%c%c]" (upcase char) (downcase char)))
+               word ""))
+
+  (defun my/svg-in-block-p (pos)
+    "Non-nil when POS is inside a source, example, export or comment block."
+    (save-excursion
+      (goto-char pos)
+      (and (org-in-block-p '("src" "example" "export" "comment")) t)))
+#+end_src
+
+*** Entries
+
+Keywords and priorities:
+
+#+begin_src emacs-lisp
+  (defun my/svg-keyword-entry (keyword face)
+    (my/svg-entry (format "^\\*+ \\(%s\\)" keyword)
+                  (lambda (tag)
+                    (my/svg-pill tag face :filled (equal keyword "TODO")))))
+
+  (defun my/svg-priority-face (letter)
+    (pcase letter
+      (?A 'org-priority)
+      (?B 'my/org-kw-homework)
+      (?C 'my/org-kw-question)
+      (_ 'org-done)))
+
+  (defun my/svg-priority-entry ()
+    (my/svg-entry "\\(\\[#[A-Z]\\]\\)"
+                  (lambda (tag)
+                    (let ((letter (aref tag 2)))
+                      (my/svg-pill (string letter) (my/svg-priority-face letter)
+                                   :filled t)))))
+#+end_src
+
+Progress cookies (percent and fraction forms):
+
+#+begin_src emacs-lisp
+  (defun my/svg-progress (label fraction)
+    (my/svg-pill label
+                 (if (>= fraction 1)
+                     'org-checkbox-statistics-done
+                   'org-checkbox-statistics-todo)
+                 :progress (min 1.0 fraction)))
+
+  (defun my/svg-progress-entries ()
+    (list (my/svg-entry "\\(\\[[0-9]\\{1,3\\}%\\]\\)"
+                        (lambda (tag)
+                          (let ((percent (string-to-number (substring tag 1 -2))))
+                            (my/svg-progress (format "%d%%" percent)
+                                             (/ percent 100.0)))))
+          (my/svg-entry "\\(\\[[0-9]+/[0-9]+\\]\\)"
+                        (lambda (tag)
+                          (let* ((label (substring tag 1 -1))
+                                 (parts (mapcar #'string-to-number
+                                                (split-string label "/")))
+                                 (total (cadr parts)))
+                            (my/svg-progress label
+                                             (if (> total 0)
+                                                 (/ (float (car parts)) total)
+                                               0.0)))))))
+#+end_src
+
+Timestamps and heading stars. The whole timestamp, brackets included, is one
+match, so a bracket can never be left showing. Only the last star is replaced
+because =org-indent-mode= keeps the earlier ones as hidden indentation.
+
+#+begin_src emacs-lisp
+  (defun my/svg-timestamp-entry (open close inner face filled-rest)
+    "Replace a whole timestamp, brackets included, with one image."
+    (my/svg-entry (format "\\(%s%s\\(?: %s*\\)?%s\\)" open my/svg-date-re inner close)
+                  (lambda (tag)
+                    (let* ((text (string-trim (substring tag 1 -1)))
+                           (split (string-match "[ \t]" text))
+                           (date (if split (substring text 0 split) text))
+                           (rest (and split (string-trim (substring text split)))))
+                      (if (and rest (not (string-empty-p rest)))
+                          (my/svg-pair date rest face filled-rest)
+                        (my/svg-pill date face))))))
+
+  (defun my/svg-star-entry (level)
+    "Replace the last star of a LEVEL heading; the stars before it stay hidden."
+    (my/svg-entry (format "^\\*\\{%d\\}\\(\\*\\) " (1- level))
+                  (lambda (_tag) (my/svg-star level))))
+#+end_src
+
+Heading tags become one pill each and the colons disappear.
+
+#+begin_src emacs-lisp
+  (defun my/svg-org-tag-entry (index)
+    (my/svg-entry (format "^\\*+ .*?[ \t]:\\(?:%s+:\\)\\{%d\\}\\(%s+:\\)\\(?:%s+:\\)*[ \t]*$"
+                          my/svg-tag-char (1- index) my/svg-tag-char my/svg-tag-char)
+                  (lambda (tag)
+                    (my/svg-pill (substring tag 0 -1) 'org-tag :gap 0.4))))
+
+  (defun my/svg-org-tag-entries ()
+    (cons (my/svg-entry (format "^\\*+ .*?[ \t]\\(:\\)%s+:\\(?:%s+:\\)*[ \t]*$"
+                                my/svg-tag-char my/svg-tag-char)
+                        (lambda (_tag) ""))
+          (cl-loop for index from 1 to 5
+                   collect (my/svg-org-tag-entry index))))
+#+end_src
+
+Header lines match only their own keyword (in any letter case), so
+=#+begin_src= and other lines are untouched, and a copy of a line inside a
+block keeps its plain text.
+
+#+begin_src emacs-lisp
+  (defun my/svg-header-entry (key function)
+    "Replace a whole `#+KEY: value' line with the image FUNCTION makes of the value."
+    (my/svg-entry (format "^\\(#\\+%s:[ \t]*[^ \t\n].*\\)$" (my/svg-ci key))
+                  (lambda (line)
+                    (if (my/svg-in-block-p (match-beginning 1))
+                        (propertize line 'face 'org-block)
+                      (funcall function
+                               (string-trim (substring line (1+ (string-search ":" line)))))))))
+#+end_src
+
+*** Property drawers
+
+A property drawer is drawn as a small "properties" label, one joined key and
+value label per property, and a hidden closing line. Only real property
+drawers are touched: a line counts only when nothing but property lines
+separate it from the opening line, so other drawers and text inside blocks keep
+their plain text. This covers Org-roam =ID= drawers as well. Drawers are
+hidden by default (see Property drawers), so these labels show while they are
+revealed.
+
+#+begin_src emacs-lisp
+  (defun my/svg-in-property-drawer-p (pos &optional from-above)
+    "Return the opening line's position when the line at POS is in a property drawer.
+Only property lines may sit between it and the opening line above; otherwise
+return nil. With FROM-ABOVE, start at the previous line, which is how the
+closing line is checked."
+    (save-excursion
+      (goto-char pos)
+      (forward-line 0)
+      (when from-above
+        (forward-line -1))
+      (let ((case-fold-search t))
+        (while (and (not (bobp))
+                    (not (looking-at-p "[ \t]*:\\(?:PROPERTIES\\|END\\):"))
+                    (looking-at-p "[ \t]*:\\S-+?:\\(?:[ \t]\\|$\\)"))
+          (forward-line -1))
+        (and (looking-at-p "[ \t]*:PROPERTIES:[ \t]*$") (point)))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/svg-drawer-start-entry ()
+    (my/svg-entry (format "^[ \t]*\\(:%s:\\)[ \t]*$" (my/svg-ci "properties"))
+                  (lambda (tag)
+                    (if (my/svg-in-block-p (match-beginning 1))
+                        (propertize tag 'face 'org-block)
+                      (my/svg-pill "properties" 'shadow)))))
+
+  (defun my/svg-drawer-end-entry ()
+    (my/svg-entry (format "^[ \t]*\\(:%s:\\)[ \t]*$" (my/svg-ci "end"))
+                  (lambda (tag)
+                    (let ((pos (match-beginning 1)))
+                      (cond ((my/svg-in-block-p pos) (propertize tag 'face 'org-block))
+                            ((my/svg-in-property-drawer-p pos t) "")
+                            (t tag))))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/svg-drawer-property-entry ()
+    (my/svg-entry "^[ \t]*\\(:\\S-+?:[ \t]+\\S-.*\\)$"
+                  (lambda (line)
+                    (let ((pos (match-beginning 1)))
+                      (cond ((my/svg-in-block-p pos) (propertize line 'face 'org-block))
+                            ((and (my/svg-in-property-drawer-p pos)
+                                  (string-match "\\`:\\(\\S-+?\\):[ \t]+\\(.*\\)\\'" line))
+                             (my/svg-pair (match-string 1 line)
+                                          (string-trim (match-string 2 line))
+                                          'shadow nil))
+                            (t line))))))
+
+  (defun my/svg-drawer-entries ()
+    (list (my/svg-drawer-start-entry)
+          (my/svg-drawer-property-entry)
+          (my/svg-drawer-end-entry)))
+#+end_src
+
+*** Assembly
+
+All entries are collected into one list and the mode is switched on only when
+the frame can show SVG.
+
+#+begin_src emacs-lisp
+  (defun my/svg-tag-tags ()
+    (append
+     (cl-loop for level from 1 to 8 collect (my/svg-star-entry level))
+     (cl-loop for (keyword . face) in (append my/todo-faces '(("DONE" . org-done)))
+              collect (my/svg-keyword-entry keyword face))
+     (list (my/svg-priority-entry))
+     (my/svg-progress-entries)
+     (list (my/svg-timestamp-entry "<" ">" "[^>\n]" 'org-date t)
+           (my/svg-timestamp-entry "\\[" "\\]" "[^]\n]" 'shadow nil))
+     (my/svg-org-tag-entries)
+     (my/svg-drawer-entries)
+     ;; Last, so a `#+date: <...>' line is drawn as one annotation.
+     (list (my/svg-header-entry "title" #'my/svg-title)
+           (my/svg-header-entry "date" #'my/svg-date-annotation)
+           (my/svg-header-entry "property" #'my/svg-property-annotation))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/svg-tag-maybe ()
+    (when (and (display-graphic-p) (image-type-available-p 'svg))
+      (svg-tag-mode 1)))
+
+  (use-package svg-tag-mode
+    :commands svg-tag-mode
+    :hook (org-mode . my/svg-tag-maybe)
+    :custom
+    (svg-tag-action-at-point 'edit)
+    (svg-tag-tags (my/svg-tag-tags)))
+#+end_src
+
+** Property drawers
+
+Property drawers are hidden completely, including their folding ellipsis, so
+the title gets the top of the buffer. Each drawer is covered by an invisible
+overlay that is rebuilt when the buffer opens and after every save. A drawer is
+only covered when nothing but property lines sit between its first and last
+line, so a broken drawer can never swallow the text below it. The toggle in
+Functions reveals them again.
+
+#+begin_src emacs-lisp
+  (defun my/org-hide-property-drawers ()
+    "Cover every property drawer in the buffer with an invisible overlay."
+    (when (derived-mode-p 'org-mode)
+      (remove-overlays (point-min) (point-max) 'my-drawer t)
+      (save-excursion
+        (save-match-data
+          (goto-char (point-min))
+          (while (re-search-forward "^[ \t]*:PROPERTIES:[ \t]*$" nil t)
+            (let ((start (line-beginning-position)))
+              (when (and (not (my/svg-in-block-p start))
+                         (re-search-forward "^[ \t]*:END:[ \t]*$" nil t)
+                         (eql (my/svg-in-property-drawer-p (line-beginning-position) t)
+                              start))
+                (let ((overlay (make-overlay start (min (1+ (point)) (point-max))
+                                             nil t)))
+                  (overlay-put overlay 'my-drawer t)
+                  (overlay-put overlay 'invisible 'my-drawer)
+                  (overlay-put overlay 'evaporate t)))))))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (defun my/org-drawers-setup ()
+    (add-to-invisibility-spec 'my-drawer)
+    (my/org-hide-property-drawers)
+    (add-hook 'after-save-hook #'my/org-hide-property-drawers nil t))
+
+  (add-hook 'org-mode-hook #'my/org-drawers-setup)
+#+end_src
+
+** Core
+
+Source blocks are edited in the current window and indented by two spaces,
+which matches how this file is written; tangling removes the indentation again.
+Emacs Lisp blocks run without confirmation, other languages still ask.
+
+#+begin_src emacs-lisp
+  (use-package org
+    :hook ((org-mode . org-indent-mode)
+           (org-mode . variable-pitch-mode))
+    :custom
+    (org-directory my/notes-dir)
+    (org-ellipsis " ⋅")
+    (org-hide-emphasis-markers t)
+    (org-pretty-entities t)
+    (org-fontify-whole-heading-line t)
+    (org-fontify-done-headline t)
+    (org-fontify-quote-and-verse-blocks t)
+    (org-startup-folded 'nofold)
+    (org-auto-align-tags nil)
+    (org-tags-column 0)
+    (org-catch-invisible-edits 'show-and-error)
+    (org-log-into-drawer t)
+    (org-deadline-warning-days 7)
+    (org-src-window-setup 'current-window)
+    (org-src-preserve-indentation nil)
+    (org-edit-src-content-indentation 2)
+    (org-confirm-babel-evaluate (lambda (language _body) (not (equal language "emacs-lisp")))))
+#+end_src
+
+Task keywords, refiling and archiving:
+
+#+begin_src emacs-lisp
+  (use-package org
+    :custom
+    (org-todo-keywords '((sequence "TODO(t)" "QUESTION(q)" "HOMEWORK(h)" "NOTE(n)"
+                                   "|" "DONE(d/!)")))
+    (org-todo-keyword-faces my/todo-faces)
+    (org-refile-targets '((org-agenda-files :maxlevel . 2)))
+    (org-refile-use-outline-path 'file)
+    (org-outline-path-complete-in-steps nil)
+    (org-refile-allow-creating-parent-nodes 'confirm)
+    (org-archive-location (concat my/notes-dir "archive.org::* From %s")))
+#+end_src
+
+Babel languages and quick-insert templates:
+
+#+begin_src emacs-lisp
+  (use-package org
+    :config
+    (setf (alist-get 'file org-link-frame-setup) 'find-file)
+    (org-babel-do-load-languages
+     'org-babel-load-languages
+     '((emacs-lisp . t) (python . t) (shell . t) (C . t)))
+    (require 'org-tempo)
+    (dolist (template '(("sh" . "src shell :results verbatim")
+                        ("el" . "src emacs-lisp")
+                        ("py" . "src python :results output")
+                        ("cpp" . "src C++ :results verbatim\n\n#include <iostream>\nusing namespace std;\n\nint main() {\n  return 0;\n}")
+                        ("cl" . "src C :results verbatim\n\n#include <stdio.h>\n\nint main(void) {\n  return 0;\n}")
+                        ("asm" . "src asm :results verbatim")))
+      (add-to-list 'org-structure-template-alist template)))
+#+end_src
+
+** Agenda
+
+All files in the notes directory feed the agenda. The default view combines
+upcoming days with open work; the other commands are single-purpose views.
+
+#+begin_src emacs-lisp
+  (use-package org-agenda
+    :defer t
+    :custom
+    (org-agenda-files (list my/notes-dir))
+    (org-agenda-window-setup 'current-window)
+    (org-agenda-block-separator " ")
+    (org-agenda-span 10)
+    (org-agenda-start-on-weekday nil)
+    (org-agenda-use-time-grid nil)
+    (org-agenda-tags-column 0)
+    (org-agenda-include-diary t)
+    (org-agenda-skip-scheduled-if-done t)
+    (org-agenda-skip-deadline-if-done t)
+    (org-agenda-skip-unavailable-files t)
+    (org-agenda-todo-keyword-format "%-9s")
+    :hook (org-agenda-mode . variable-pitch-mode))
+#+end_src
+
+#+begin_src emacs-lisp
+  (use-package org-agenda
+    :defer t
+    :custom
+    (org-agenda-prefix-format '((agenda . " %i %-12:c%?-12t% s")
+                                (todo . " %i %-12:c")
+                                (tags . " %i %-12:c")
+                                (search . " %i %-12:c"))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (use-package org-agenda
+    :defer t
+    :custom
+    (org-agenda-custom-commands
+     '(("a" "Overview"
+        ((agenda "")
+         (todo "HOMEWORK" ((org-agenda-overriding-header "Due assignments")))
+         (todo "QUESTION" ((org-agenda-overriding-header "Unanswered questions")))
+         (todo "TODO"
+               ((org-agenda-overriding-header "Unscheduled tasks")
+                (org-agenda-skip-function
+                 '(org-agenda-skip-entry-if 'scheduled 'deadline))))))
+       ("w" "This week"
+        ((agenda "" ((org-agenda-span 7) (org-agenda-start-day "today")))))
+       ("h" "Homework" todo "HOMEWORK")
+       ("q" "Questions" todo "QUESTION")
+       ("n" "Notes" todo "NOTE")
+       ("d" "Deadlines"
+        ((agenda "" ((org-agenda-span 30)
+                     (org-agenda-entry-types '(:deadline))
+                     (org-agenda-overriding-header "Upcoming deadlines"))))))))
+#+end_src
+
+** Capture
+
+Tasks, homework, questions and notes go to one tasks file with a creation
+timestamp. Journal entries go into a date tree.
+
+#+begin_src emacs-lisp
+  (defconst my/tasks-file (expand-file-name "tasks.org" my/notes-dir))
+  (defconst my/journal-file (expand-file-name "journal.org" my/notes-dir))
+#+end_src
+
+#+begin_src emacs-lisp
+  (use-package org-capture
+    :defer t
+    :custom
+    (org-capture-bookmark nil)
+    (org-capture-templates
+     `(("t" "Task" entry (file ,my/tasks-file)
+        "* TODO %?\n  :PROPERTIES:\n  :CREATED: %U\n  :END:\n  %i"
+        :empty-lines 1)
+       ("h" "Homework" entry (file ,my/tasks-file)
+        "* HOMEWORK %?\n  DEADLINE: %^{Due}t\n  :PROPERTIES:\n  :CREATED: %U\n  :END:\n  %i"
+        :empty-lines 1)
+       ("q" "Question" entry (file ,my/tasks-file)
+        "* QUESTION %?\n  :PROPERTIES:\n  :CREATED: %U\n  :END:\n  %i"
+        :empty-lines 1)
+       ("n" "Note" entry (file ,my/tasks-file)
+        "* NOTE %?\n  :PROPERTIES:\n  :CREATED: %U\n  :END:\n  %i"
+        :empty-lines 1)
+       ("j" "Journal" entry (file+olp+datetree ,my/journal-file)
+        "* %<%H:%M> %?\n  %i"
+        :empty-lines 1))))
+#+end_src
+
+** Roam
+
+Org-roam keeps linked notes in the notes directory. New notes share one
+template builder, and daily notes live in their own folder.
+
+*** Templates
+
+#+begin_src emacs-lisp
+  (defconst my/roam-daily-head "#+title: %<%Y-%m-%d, %A>\n\n")
+
+  (defun my/roam-template (key name body &optional tag)
+    `(,key ,name plain ,body
+           :target (file+head "%<%Y%m%d%H%M%S>-${slug}.org"
+                              ,(concat "#+title: ${title}\n#+date: %<%Y-%m-%d>\n"
+                                       (when tag (format "#+filetags: :%s:\n" tag))
+                                       "\n"))
+           :unnarrowed t))
+#+end_src
+
+*** Setup
+
+#+begin_src emacs-lisp
+  (use-package org-roam
+    :init
+    (setq org-id-locations-file (my/cache "org-id-locations"))
+    :custom
+    (org-roam-directory (file-truename my/roam-dir))
+    (org-roam-db-location (my/cache "org-roam.db"))
+    (org-roam-completion-everywhere t)
+    (org-roam-node-display-template (concat "${title:*} " (propertize "${tags:20}" 'face 'org-tag)))
+    (org-roam-mode-sections (list #'org-roam-backlinks-section
+                                  #'org-roam-reflinks-section
+                                  #'org-roam-unlinked-references-section))
+    :config
+    (require 'org-roam-dailies)
+    (add-to-list 'display-buffer-alist
+                 '("\\*org-roam\\*"
+                   (display-buffer-in-direction)
+                   (direction . right)
+                   (window-width . 0.33)))
+    (org-roam-db-autosync-mode 1))
+#+end_src
+
+#+begin_src emacs-lisp
+  (use-package org-roam
+    :custom
+    (org-roam-capture-templates
+     (list (my/roam-template "d" "default" "%?")
+           (my/roam-template "c" "concept" "* Summary\n%?\n\n* Details\n\n* Related\n" "concept")
+           (my/roam-template "l" "literature" "* Source\n%?\n\n* Notes\n\n* Takeaways\n" "literature")
+           (my/roam-template "p" "project" "* Goals\n%?\n\n* Tasks\n** TODO Define the first task\n\n* Log\n" "project")))
+    (org-roam-dailies-directory "daily/")
+    (org-roam-dailies-capture-templates
+     `(("d" "journal" entry "* %<%H:%M> %?"
+        :target (file+head "%<%Y-%m-%d>.org" ,my/roam-daily-head))
+       ("t" "task" entry "* TODO %?"
+        :target (file+head+olp "%<%Y-%m-%d>.org" ,my/roam-daily-head ("Tasks"))))))
+#+end_src
+
+#+begin_src emacs-lisp
+  (use-package org-roam-ui
+    :after org-roam
+    :commands org-roam-ui-mode
+    :custom
+    (org-roam-ui-sync-theme nil)
+    (org-roam-ui-follow t)
+    (org-roam-ui-update-on-save t)
+    (org-roam-ui-open-on-start nil))
+#+end_src
+
+* Keybindings
+
+Which-key for discovery, =general= for definitions, then global, per-state and
+per-mode keys, and finally the leader tree. Every leader entry carries a label
+that appears in the which-key popup.
+
+** Which-key
+
+It ships with Emacs and shows its popup in the minibuffer, which is the stable
+choice for a daemon.
+
+#+begin_src emacs-lisp
+  (use-package which-key
+    :custom
+    (which-key-popup-type 'minibuffer)
+    (which-key-idle-delay 0.3)
+    (which-key-add-column-padding 3)
+    (which-key-separator "  ")
+    (which-key-prefix-prefix " ")
+    :config (which-key-mode 1))
+#+end_src
+
+** General
+
+=my/leader= is the leader definer. It sits in the override keymap, so the
+leader works in every mode, with a different prefix for insert and Emacs
+states.
+
+#+begin_src emacs-lisp
+  (use-package general
+    :demand t
+    :config
+    (general-auto-unbind-keys)
+    (general-override-mode 1)
+    (general-create-definer my/leader
+      :states '(normal visual motion insert emacs)
+      :keymaps 'override
+      :prefix "SPC"
+      :non-normal-prefix "C-SPC"))
+#+end_src
+
+** Global keys
+
+Vim-style navigation keys are freed from their Emacs meanings so Vertico,
+Company and Evil can reuse them.
+
+#+begin_src emacs-lisp
+  (dolist (key '("C-j" "C-k" "C-l"))
+    (keymap-global-unset key t))
+
+  (general-define-key
+   "M-a" #'mark-whole-buffer
+   "M-i" #'my/open-in-term
+   "M-," #'which-key-abort
+   "C-;" #'embark-become
+   "C-<return>" #'embark-act
+   "<escape>" #'keyboard-escape-quit)
+
+  (keymap-global-set "<remap> <next-buffer>" #'my/next-buffer)
+  (keymap-global-set "<remap> <previous-buffer>" #'my/previous-buffer)
+#+end_src
+
+** Normal state
+
+The leader key itself is unbound in the Evil state maps so the override map
+can claim it.
+
+#+begin_src emacs-lisp
+  (general-define-key
+   :states 'normal
+   "M-d" #'duplicate-dwim
+   "C-u" #'evil-scroll-up
+   "C-d" #'evil-scroll-down
+   "C-s" (lambda () (interactive) (evil-ex "%s/"))
+   "C-l" #'my/clear
+   "C-n" #'iedit-next-occurrence
+   "C-S-n" #'iedit-prev-occurrence
+   "M-k" #'drag-stuff-up
+   "M-j" #'drag-stuff-down
+   "M-h" #'drag-stuff-left
+   "M-l" #'drag-stuff-right
+   "C-/" #'consult-line-multi
+   "gC" (lambda ()
+          (interactive)
+          (comment-indent)
+          (just-one-space)
+          (evil-append-line 1))
+   "gn" #'flymake-goto-next-error
+   "gp" #'flymake-goto-prev-error)
+
+  (dolist (map (list evil-motion-state-map evil-normal-state-map evil-visual-state-map))
+    (keymap-unset map "SPC" t))
+#+end_src
+
+** Per-mode keys
+
+Bindings applied once the owning package has loaded.
+
+#+begin_src emacs-lisp
+  (with-eval-after-load 'vertico
+    (general-define-key
+     :keymaps 'vertico-map
+     "C-l" #'vertico-insert
+     "C-S-l" (lambda () (interactive) (vertico-insert) (minibuffer-force-complete-and-exit))
+     "C-k" #'vertico-next
+     "C-j" #'vertico-previous
+     "C-h" #'vertico-directory-up))
+
+  (with-eval-after-load 'company
+    (general-define-key
+     :keymaps 'company-active-map
+     "C-k" #'company-select-previous
+     "C-j" #'company-select-next
+     "C-l" #'company-complete
+     "C-h" #'company-abort))
+#+end_src
+
+#+begin_src emacs-lisp
+  (with-eval-after-load 'org
+    (general-define-key :states 'normal :keymaps 'org-mode-map
+                        "RET" #'org-open-at-point-global)
+    (dolist (key '("C-h" "C-S-h"))
+      (keymap-unset org-mode-map key t)))
+
+  (with-eval-after-load 'comint
+    (dolist (key '("M-n" "M-p" "M-S-p"))
+      (keymap-unset comint-mode-map key t)))
+
+  (with-eval-after-load 'dired
+    (evil-define-key 'normal dired-mode-map
+      "l" #'dired-find-alternate-file
+      "h" #'dired-up-directory
+      "c" #'dired-create-empty-file
+      "Q" #'kill-buffer-and-window))
+#+end_src
+
+** Leader
+
+Grouped by prefix: code, navigation, files, org and notes, buffers and
+search, evaluation and help, then toggles and utilities.
+
+*** Code and navigation
+
+#+begin_src emacs-lisp
+  (my/leader
+    "SPC" '(execute-extended-command :which-key "M-x")
+    "k" '(lsp-ui-doc-glance :which-key "hover"))
+
+  (my/leader
+    "c" '(:ignore t :which-key "code")
+    "ca" '(lsp-execute-code-action :which-key "code actions")
+    "cr" '(lsp-rename :which-key "rename symbol")
+    "ce" '(org-ctrl-c-ctrl-c :which-key "execute code block")
+    "cs" '(lsp-iedit-highlights :which-key "highlight symbol")
+    "cS" '(iedit-mode :which-key "iedit mode")
+    "cc" '(compile :which-key "compile")
+    "cf" '(format-all-region-or-buffer :which-key "format buffer")
+    "cF" '(my/indent-buffer :which-key "indent buffer"))
+
+  (my/leader
+    "a" '(:ignore t :which-key "avy")
+    "aa" '(avy-goto-word-1 :which-key "avy word")
+    "al" '(avy-goto-line :which-key "avy line")
+    "am" '(:ignore t :which-key "avy move")
+    "aml" '(avy-move-line :which-key "avy move line"))
+#+end_src
+
+*** Files
+
+#+begin_src emacs-lisp
+  (my/leader
+    "f" '(:ignore t :which-key "files")
+    "ff" '(find-file :which-key "find a file")
+    "fr" '(consult-recent-file :which-key "recent files")
+    "fd" '(dired-jump :which-key "open dired")
+    "fi" '(evil-show-file-info :which-key "file info")
+    "fot" '(org-babel-tangle :which-key "org tangle")
+    "fc" '(:ignore t :which-key "current file")
+    "fcr" '(rename-visited-file :which-key "rename current file")
+    "fcR" '(recover-this-file :which-key "recover file")
+    "fcn" '(my/open-current-file-in-nvim :which-key "open in nvim")
+    "fce" '(my/open-externally :which-key "open externally"))
+#+end_src
+
+*** Org
+
+#+begin_src emacs-lisp
+  (my/leader
+    "o" '(:ignore t :which-key "org")
+    "oe" '(my/org-babel-edit :which-key "edit source block")
+    "od" '(my/org-to-docx :which-key "export to docx")
+    "oa" '(org-agenda :which-key "open agenda")
+    "oc" '(org-capture :which-key "capture")
+    "or" '(org-refile :which-key "refile")
+    "oA" '(org-archive-subtree :which-key "archive subtree")
+    "ots" '(my/org-schedule-tomorrow :which-key "schedule tomorrow")
+    "oy" '(my/org-copy-src-blocks :which-key "copy source blocks")
+    "oi" '(:ignore t :which-key "org insert")
+    "ois" '(org-schedule :which-key "insert schedule")
+    "oid" '(org-deadline :which-key "insert deadline")
+    "oil" '(org-insert-link :which-key "insert link"))
+#+end_src
+
+*** Notes
+
+#+begin_src emacs-lisp
+  (my/leader
+    "n" '(:ignore t :which-key "notes")
+    "nf" '(org-roam-node-find :which-key "find node")
+    "ni" '(org-roam-node-insert :which-key "insert node link")
+    "nc" '(org-roam-capture :which-key "capture node")
+    "nb" '(org-roam-buffer-toggle :which-key "backlinks buffer")
+    "no" '(org-id-get-create :which-key "make heading a node")
+    "ne" '(org-roam-extract-subtree :which-key "extract subtree")
+    "nm" '(org-roam-refile :which-key "refile to node")
+    "nt" '(org-roam-tag-add :which-key "add tag")
+    "nT" '(org-roam-tag-remove :which-key "remove tag")
+    "na" '(org-roam-alias-add :which-key "add alias")
+    "nA" '(org-roam-alias-remove :which-key "remove alias")
+    "nr" '(org-roam-ref-add :which-key "add ref")
+    "nR" '(org-roam-ref-remove :which-key "remove ref")
+    "nx" '(org-roam-node-random :which-key "random node")
+    "ns" '(org-roam-db-sync :which-key "sync database")
+    "ng" '(org-roam-graph :which-key "static graph")
+    "nu" '(org-roam-ui-mode :which-key "graph UI"))
+
+  (my/leader
+    "nj" '(org-roam-dailies-capture-today :which-key "capture today")
+    "nd" '(:ignore t :which-key "dailies")
+    "ndt" '(org-roam-dailies-goto-today :which-key "go to today")
+    "ndy" '(org-roam-dailies-goto-yesterday :which-key "go to yesterday")
+    "ndm" '(org-roam-dailies-goto-tomorrow :which-key "go to tomorrow")
+    "ndd" '(org-roam-dailies-goto-date :which-key "go to date")
+    "ndn" '(org-roam-dailies-goto-next-note :which-key "next daily")
+    "ndp" '(org-roam-dailies-goto-previous-note :which-key "previous daily")
+    "ndc" '(org-roam-dailies-capture-date :which-key "capture on date"))
+#+end_src
+
+*** Buffers, search and lookup
+
+#+begin_src emacs-lisp
+  (my/leader
+    "b" '(:ignore t :which-key "buffers")
+    "bb" '(consult-buffer :which-key "view buffers")
+    "bn" '(my/next-buffer :which-key "next buffer")
+    "bp" '(my/previous-buffer :which-key "previous buffer")
+    "bd" '(kill-buffer-and-window :which-key "kill buffer and window")
+    "bk" '(kill-some-buffers :which-key "kill other buffers"))
+
+  (my/leader
+    "s" '(:ignore t :which-key "search")
+    "ss" '(consult-line :which-key "line search")
+    "sr" '(consult-ripgrep :which-key "search with rg")
+    "sp" '(consult-fd :which-key "search with fd")
+    "sg" '(my/google-this :which-key "search google")
+    "sd" '(dictionary-search :which-key "dictionary")
+    "g" '(:ignore t :which-key "get")
+    "gi" '(consult-imenu :which-key "imenu")
+    "gf" '(list-faces-display :which-key "list faces")
+    "gk" '(consult-yank-from-kill-ring :which-key "kill ring"))
+#+end_src
+
+*** Evaluate and help
+
+#+begin_src emacs-lisp
+  (my/leader
+    "e" '(:ignore t :which-key "evaluate")
+    "eb" '(eval-buffer :which-key "evaluate buffer")
+    "ee" '(eval-last-sexp :which-key "evaluate last expression")
+    "er" '(eval-region :which-key "evaluate region"))
+
+  (my/leader
+    "h" '(:ignore t :which-key "help")
+    "ht" '(helpful-at-point :which-key "describe at point")
+    "hF" '(describe-face :which-key "describe face")
+    "hf" '(helpful-callable :which-key "describe function")
+    "hh" '(devdocs-lookup :which-key "devdocs")
+    "hb" '(embark-bindings :which-key "describe bindings")
+    "hk" '(helpful-key :which-key "describe key")
+    "hv" '(helpful-variable :which-key "describe variable")
+    "hrb" '(revert-buffer-quick :which-key "reload buffer"))
+#+end_src
+
+*** Toggles and utilities
+
+#+begin_src emacs-lisp
+  (my/leader
+    "t" '(:ignore t :which-key "toggles")
+    "tt" '(toggle-truncate-lines :which-key "word wrap")
+    "tv" '(visual-line-mode :which-key "visual line mode")
+    "tR" '(read-only-mode :which-key "read only")
+    "ts" '(svg-tag-mode :which-key "svg tags")
+    "tf" '(flymake-mode :which-key "flymake")
+    "tm" '(my/toggle-menu-bar :which-key "menu bar")
+    "tl" '(my/toggle-mode-line :which-key "mode line")
+    "tp" '(my/toggle-property-drawers :which-key "property drawers")
+    "ta" '(:ignore t :which-key "amoled")
+    "tae" '(my/amoled-on :which-key "amoled on")
+    "tad" '(my/amoled-off :which-key "amoled off")
+    "tT" '(my/open-in-term :which-key "terminal")
+    "to" '(:ignore t :which-key "toggle org")
+    "tol" '(org-toggle-link-display :which-key "link display"))
+
+  (my/leader
+    "l" '(:ignore t :which-key "latex")
+    "lv" '(TeX-view :which-key "latex view")
+    "lc" '(my/compile-latex :which-key "latex compile")
+    "x" '(:ignore t :which-key "execute")
+    "xr" '(my/reload-config :which-key "reload config")
+    "xt" '(my/theme-reload :which-key "reload theme")
+    "xa" '(my/theme-reload :which-key "apply settings")
+    "i" '(:ignore t :which-key "insert")
+    "ii" '(nerd-icons-insert :which-key "insert icon")
+    "it" '(org-insert-time-stamp :which-key "insert time stamp"))
+#+end_src
+
+* End of file
+
+#+begin_src emacs-lisp
+  ;;; init.el ends here
+#+end_src

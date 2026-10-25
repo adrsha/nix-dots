@@ -1,1 +1,0 @@
-{"rustc":5244445300240561903,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[12218038128326563404,"build_script_build",false,9068454315246961152]],"local":[{"RerunIfChanged":{"output":"debug/build/vello_shaders-316a58d16024eecd/output","paths":["shader"]}}],"rustflags":[],"config":0,"compile_kind":0}

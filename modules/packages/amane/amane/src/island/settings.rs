@@ -1,6 +1,8 @@
 //! In-island vertical settings, with independent accordion sections.
 use super::*;
-use amane::{Bluetooth, Network, TextInput, Widget};
+use amane::{Bluetooth, Network, ScrollArea, TextInput, Widget};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 use std::{fs, path::PathBuf, process::Command};
 #[derive(Clone, Copy, PartialEq)]
 enum Section {
@@ -25,6 +27,35 @@ struct Settings {
     status: String,
     theme_busy: bool,
     themes: Vec<Theme>,
+    /// Theme currently opened in the editor.
+    editing_theme: Option<String>,
+    /// One entry per KEY=VALUE line of the edited theme, in file order.
+    editor: Vec<EditorField>,
+    /// Media files from the wallpapers directory, sorted by folder.
+    wallpapers: Vec<WallItem>,
+    /// Position of the wallpaper preview carousel.
+    wallpaper_index: usize,
+    /// Sidebar category filter; "all" shows every folder.
+    wallpaper_filter: String,
+}
+/// A media file from the wallpapers directory.
+#[derive(Clone)]
+struct WallItem {
+    path: String,
+    name: String,
+    /// Subfolder inside ~/Pictures/walls ("walls" for loose files).
+    category: String,
+    /// Video files are shown as thumbnails and painted with mpvpaper.
+    video: bool,
+}
+/// An editable KEY=VALUE line of the current theme-editor session. The input id
+/// is leaked once per session so `TextInput::set_text` can seed it and the
+/// identity stays stable while the rows rebuild every frame.
+#[derive(Clone)]
+struct EditorField {
+    key: String,
+    value: String,
+    id: &'static str,
 }
 #[derive(Clone)]
 struct Theme {
@@ -33,7 +64,7 @@ struct Theme {
 }
 impl Service for Settings {
     fn new() -> Self {
-        Self {
+        let mut this = Self {
             open: false,
             sections: [true, false, false, false],
             sidebar_labels: false,
@@ -52,7 +83,15 @@ impl Service for Settings {
             status: String::new(),
             theme_busy: false,
             themes: themes(),
-        }
+            editing_theme: None,
+            editor: vec![],
+            wallpapers: wallpapers(),
+            wallpaper_index: 0,
+            wallpaper_filter: "all".into(),
+        };
+        // Point the carousel at the wallpaper that is currently active.
+        this.wallpaper_index = active_wallpaper_index(&this.wallpapers);
+        this
     }
     fn interval() -> Duration {
         Duration::from_millis(35)
@@ -69,7 +108,7 @@ impl Service for Settings {
         changed
     }
 }
-pub(super) fn state_dir() -> PathBuf {
+pub fn state_dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -268,6 +307,17 @@ fn contents(s: &Settings) -> Column {
         rows.push(Box::new(amoled_switch(panel - 48.0, false)));
         rows.push(Box::new(amoled_switch(panel - 48.0, true)));
 
+        rows.push(Box::new(section_label(
+            "Wallpaper",
+            &format!(
+                "{} file{} in ~/Pictures/walls",
+                s.wallpapers.len(),
+                if s.wallpapers.len() == 1 { "" } else { "s" }
+            ),
+            panel - 48.0,
+        )));
+        rows.push(Box::new(wallpaper_section(s, panel - 48.0)));
+
         rows.push(Box::new(
             label("Main island visibility")
                 .size(17.0)
@@ -353,6 +403,12 @@ fn contents(s: &Settings) -> Column {
             .size(13.0)
             .color(crate::theme::palette().cyan),
         ));
+        rows.push(Box::new(
+            label("Click a card to apply it, right-click to edit it.")
+                .size(12.0)
+                .color(settings_secondary()),
+        ));
+        rows.extend(theme_editor_rows(s, panel - 48.0));
         let mut cards = vec![];
         for chunk in s.themes.chunks(2) {
             let mut tiles = vec![];
@@ -360,6 +416,7 @@ fn contents(s: &Settings) -> Column {
                 let name = theme.name.clone();
                 let key = format!("theme:{name}");
                 let ck = key.clone();
+                let edit_name = name.clone();
                 let swatches = theme
                     .colors
                     .iter()
@@ -394,6 +451,9 @@ fn contents(s: &Settings) -> Column {
                             if b == Button::Left {
                                 crate::feedback::click(&ck);
                                 apply_theme(name.clone())
+                            } else if b == Button::Right {
+                                crate::feedback::click(&ck);
+                                edit_theme(edit_name.clone())
                             }
                         })
                         .child(
@@ -716,6 +776,1506 @@ fn apply_theme(name: String) {
         state.status = result;
     });
 }
+
+fn theme_file(name: &str) -> PathBuf {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
+        });
+    config.join("theme-manager/themes").join(name)
+}
+
+/// Every location the theme file should be written to: the theme-set-visible
+/// path (`~/.config/theme-manager/themes`) plus the live file behind the
+/// symlink when they differ. Duplicates single-target setups.
+fn theme_write_targets(name: &str) -> Vec<PathBuf> {
+    let direct = theme_file(name);
+    let mut targets = vec![direct.clone()];
+    if let Ok(canonical) = fs::canonicalize(&direct) {
+        if canonical != direct {
+            targets.push(canonical);
+        }
+    }
+    targets
+}
+
+// ---------------------------------------------------------------- theme editor
+
+fn group_name(key: &str) -> Option<&'static str> {
+    match key {
+        "VARIANT" | "MODE" | "OPACITY" => Some("General"),
+        "BASE00" => Some("Base 16"),
+        "WHITE" => Some("Base 30"),
+        "CORNER_RADIUS" => Some("Shaping"),
+        _ => None,
+    }
+}
+
+fn edit_theme(name: String) {
+    let text = fs::read_to_string(theme_file(&name)).unwrap_or_default();
+    let mut fields = vec![];
+    let mut seen = std::collections::HashSet::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || !line.contains('=') {
+            continue;
+        }
+        let (key, value) = line.split_once('=').unwrap();
+        let key = key.trim().to_string();
+        if key.is_empty() || !seen.insert(key.clone()) {
+            continue;
+        }
+        let id: &'static str = Box::leak(
+            format!("theme-edit:{name}::{key}").into_boxed_str(),
+        );
+        fields.push(EditorField {
+            key,
+            id,
+            value: value.trim().to_string(),
+        });
+    }
+    let mut s = Settings::write();
+    for f in &s.editor {
+        TextInput::set_text(f.id, "");
+    }
+    for f in &fields {
+        TextInput::set_text(f.id, &f.value);
+    }
+    s.editor = fields;
+    s.editing_theme = Some(name);
+}
+
+fn close_editor() {
+    let mut s = Settings::write();
+    for f in &s.editor {
+        TextInput::set_text(f.id, "");
+    }
+    s.editor.clear();
+    s.editing_theme = None;
+}
+
+/// Rewrites the theme file with the editor's values. Preserves comments and
+/// layout by replacing the right-hand side of each known KEY= line; keys that
+/// the original file lacked are appended. Falls back to a pkexec relink
+/// (password dialog) when the target lives in the read-only Nix store.
+fn save_theme_edits(apply: bool) {
+    let (name, fields) = {
+        let mut s = Settings::write();
+        if s.theme_busy {
+            return;
+        }
+        let Some(name) = s.editing_theme.clone() else {
+            return;
+        };
+        s.theme_busy = true;
+        s.status = format!("Saving {name}…");
+        (name, s.editor.clone())
+    };
+    std::thread::spawn(move || {
+        let file = theme_file(&name);
+        let original = fs::read_to_string(&file).unwrap_or_default();
+        let pairs: Vec<(String, String)> = fields
+            .iter()
+            .map(|f| (f.key.clone(), f.value.clone()))
+            .collect();
+        let out = merge_theme_values(&original, &pairs);
+        // Write both candidates at once: the theme-set-visible path and the
+        // live file behind the symlink, so an edit never depends on the link.
+        let targets = theme_write_targets(&name);
+        let mut saved: Vec<String> = vec![];
+        let mut errors: Vec<String> = vec![];
+        for target in targets {
+            match fs::write(&target, &out) {
+                Ok(()) => saved.push(target.display().to_string().chars().take(60).collect()),
+                Err(e) => errors.push(format!("{} ({e})", target.display())),
+            }
+        }
+        let result = if saved.is_empty() {
+            // The Nix store copy cannot be written directly; point the user
+            // at the live-folder link and the relink button instead.
+            let tmp = state_dir().join("theme-edit.tmp");
+            let staged = fs::create_dir_all(tmp.parent().unwrap())
+                .and_then(|_| fs::write(&tmp, &out))
+                .is_ok();
+            if staged {
+                format!(
+                    "Theme files are read-only ({}); the draft went to {} — link themesDir to a live folder in theme_manager.nix, or use Relink.",
+                    errors.join("; "),
+                    tmp.display()
+                )
+            } else {
+                format!("Save failed: {}", errors.join("; "))
+            }
+        } else {
+            let mut s = Settings::write();
+            s.themes = themes();
+            if errors.is_empty() {
+                format!("Saved to {} location(s).", saved.len())
+            } else {
+                format!(
+                    "Saved to {} location(s); failed: {}",
+                    saved.len(),
+                    errors.join("; ")
+                )
+            }
+        };
+        let mut s = Settings::write();
+        s.theme_busy = false;
+        s.status = result;
+        drop(s);
+        if apply {
+            apply_theme(name);
+        }
+    });
+}
+
+/// Rebuilds a theme file from the original text with edited values: the
+/// KEY=VALUE line layout, values and comments survive; unknown keys append.
+fn merge_theme_values(original: &str, fields: &[(String, String)]) -> String {
+    let mut used = vec![false; fields.len()];
+    let mut out = String::new();
+    for line in original.lines() {
+        if line.trim_start().starts_with('#') || !line.contains('=') {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let Some((prefix, value)) = line.split_once('=') else {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+        let _ = value;
+        let key = prefix.trim();
+        let found = fields
+            .iter()
+            .zip(&used)
+            .position(|((key2, _), taken)| !*taken && key2 == key);
+        if let Some(i) = found {
+            used[i] = true;
+            out.push_str(prefix);
+            out.push('=');
+            out.push_str(fields[i].1.trim());
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    for ((key, value), taken) in fields.iter().zip(&used) {
+        if !*taken && !key.is_empty() {
+            out.push_str(&format!("{key}={}\n", value.trim()));
+        }
+    }
+    out
+}
+
+/// Runs `pkexec nixos-rebuild switch` so a theme directory held by the Nix
+/// store gets relinked; polkit raises the password dialog in the session.
+fn relink_nix() {
+    let mut s = Settings::write();
+    if s.theme_busy {
+        return;
+    }
+    s.theme_busy = true;
+    s.status = "Password dialog open — rebuilding NixOS to relink themes…".into();
+    std::thread::spawn(|| {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let script = format!("exec nixos-rebuild switch --flake {home}/flakes#$(hostname)");
+        let output = Command::new("pkexec").args(["sh", "-c", &script]).output();
+        let result = match output {
+            Ok(o) if o.status.success() => "Nix relink complete.".into(),
+            Ok(o) => format!(
+                "Relink failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+                    .chars()
+                    .take(240)
+                    .collect::<String>()
+            ),
+            Err(e) => format!(
+                "pkexec could not start ({e}); a polkit agent must run inside the session."
+            ),
+        };
+        let mut s = Settings::write();
+        s.theme_busy = false;
+        s.status = result;
+    });
+}
+
+fn theme_editor_rows(s: &Settings, width: f32) -> Vec<Box<dyn Widget>> {
+    let mut rows: Vec<Box<dyn Widget>> = vec![];
+    if let Some(editing) = &s.editing_theme {
+        rows.push(Box::new(
+            label(format!("Editing · {editing}"))
+                .size(17.0)
+                .weight(Weight::SemiBold),
+        ));
+        rows.push(Box::new(
+            Row::new(children![
+                button("Cancel", 84.0, close_editor),
+                button("Save", 84.0, || save_theme_edits(false)),
+                button("Save · Apply", 130.0, || save_theme_edits(true)),
+                button("Relink (Nix)", 130.0, relink_nix),
+            ])
+            .gap(8.0),
+        ));
+        let hint = label(
+            "Saving writes the theme file directly. Relink runs nixos-rebuild with a password prompt for store-linked themes.",
+        )
+        .size(12.0)
+        .color(settings_secondary())
+        .wrap()
+        .max_lines(2);
+        let hint_height = hint.height_in(width);
+        rows.push(Box::new(
+            Rectangle::new()
+                .width(width)
+                .height(hint_height)
+                .child(hint),
+        ));
+    }
+    for (i, field) in s.editor.iter().enumerate() {
+        if let Some(group) = group_name(&field.key) {
+            rows.push(Box::new(label(group).size(15.0).weight(Weight::SemiBold)));
+        }
+        rows.push(Box::new(editor_row(s, i, width)));
+    }
+    rows
+}
+
+fn editor_row(s: &Settings, index: usize, width: f32) -> Rectangle {
+    let field = &s.editor[index];
+    let color = parse_hex(&field.value);
+    let id = field.id;
+    Rectangle::new()
+        .width(width)
+        .height(40.0)
+        .padding(6.0)
+        .radius(10.0)
+        .fill(setting_surface())
+        .align_child(Start, Center)
+        .child(
+            Row::new(children![
+                Rectangle::new()
+                    .width(28.0)
+                    .height(20.0)
+                    .radius(5.0)
+                    .fill(color.unwrap_or(crate::theme::palette().red))
+                    .border(if color.is_some() { 0.0 } else { 1.0 }, crate::theme::palette().red),
+                label(&field.key).size(12.0),
+                Rectangle::new()
+                    .width(150.0)
+                    .height(26.0)
+                    .child(
+                        TextInput::new(id)
+                            .size(13.0)
+                            .color(settings_foreground())
+                            .on_change(move |text| {
+                                let mut s = Settings::write();
+                                if let Some(f) = s.editor.get_mut(index) {
+                                    f.value = text;
+                                }
+                            }),
+                    ),
+            ])
+            .gap(10.0),
+        )
+}
+
+// ------------------------------------------------------------------ wallpapers
+
+/// Recursively (two levels) lists media files under ~/Pictures/walls, skipping
+/// theme-manager's own generated files. Category is the subfolder name.
+fn wallpapers() -> Vec<WallItem> {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let root = home.join("Pictures/walls");
+    let mut found = vec![];
+    let mut stack = vec![(root.clone(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(list) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in list.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            if name.starts_with("current") || name.starts_with("readme") || name.starts_with("README")
+            {
+                continue;
+            }
+            if path.is_dir() {
+                if depth < 2 {
+                    stack.push((path, depth + 1));
+                }
+                continue;
+            }
+            let Some(video) = wall_kind(&name) else {
+                continue;
+            };
+            let category = dir
+                .file_name()
+                .filter(|d| *d != root.file_name().unwrap_or_default())
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "walls".into());
+            found.push(WallItem {
+                path: path.to_string_lossy().into_owned(),
+                name,
+                category,
+                video,
+            });
+        }
+    }
+    found.sort_by(|a, b| a.category.cmp(&b.category).then(a.path.cmp(&b.path)));
+    found.truncate(60);
+    found
+}
+
+/// (is a video file?) based on the extension; `None` means unsupported.
+fn wall_kind(name: &str) -> Option<bool> {
+    let ext = name.rsplit('.').next()?.to_lowercase();
+    Some(match ext.as_str() {
+        "jpg" | "jpeg" | "png" => false,
+        "webp" | "gif" | "bmp" | "tga" | "tiff" | "avif" => false,
+        "mp4" | "m4v" | "webm" | "mkv" | "mov" | "avi" | "mpg" | "mpeg" => true,
+        _ => return None,
+    })
+}
+
+/// Files the shell decodes natively — everything else needs a generated thumb.
+fn wall_native(name: &str) -> bool {
+    let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+    matches!(ext.as_str(), "jpg" | "jpeg" | "png")
+}
+
+/// Cached ffmpeg/imagemagick thumbnails: source path → displayable png.
+static WALL_THUMBS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+static WALL_THUMB_QUEUED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+/// The image the shell can show for `item`: natives pass through, webp/gif/
+/// videos use a generated (cached) thumbnail; queued generations start here.
+fn wall_display(item: &WallItem) -> String {
+    if !item.video && wall_native(&item.name) {
+        return item.path.clone();
+    }
+    let path = item.path.clone();
+    if let Some(thumb) = WALL_THUMBS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&path).cloned())
+    {
+        return thumb;
+    }
+    let queued = WALL_THUMB_QUEUED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock();
+    let Ok(pending_guard) = queued else {
+        return String::new();
+    };
+    if pending_guard.contains(&path) {
+        return String::new();
+    }
+    drop(pending_guard);
+    let mut pending = WALL_THUMB_QUEUED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap();
+    if pending.insert(path.clone()) {
+        let item = item.clone();
+        std::thread::spawn(move || {
+            let thumb = generate_wall_thumb(&item);
+            let mut map = WALL_THUMBS
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .unwrap();
+            if let Some(thumb) = thumb {
+                map.insert(item.path.clone(), thumb);
+            }
+            WALL_THUMB_QUEUED
+                .get_or_init(|| Mutex::new(HashSet::new()))
+                .lock()
+                .unwrap()
+                .remove(&item.path);
+        });
+    }
+    String::new()
+}
+
+/// Generates (or finds cached) a png snapshot for non-native media.
+fn generate_wall_thumb(item: &WallItem) -> Option<String> {
+    let dst = wall_thumb_path(&item.path)?;
+    if !dst.exists() {
+        let ok = if item.video {
+            match ffmpeg_bin() {
+                Some(ffmpeg) => Command::new(ffmpeg)
+                    .args(["-y", "-v", "error", "-ss", "1", "-i", &item.path, "-frames:v", "1"])
+                    .arg(&dst)
+                    .stdin(std::process::Stdio::null())
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false),
+                None => false,
+            }
+        } else {
+            match magick_bin() {
+                Some(magick) => Command::new(magick)
+                    .arg(format!("{}[0]", item.path))
+                    .arg(&dst)
+                    .stdin(std::process::Stdio::null())
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false),
+                None => match ffmpeg_bin() {
+                    Some(ffmpeg) => Command::new(ffmpeg)
+                        .args(["-y", "-v", "error", "-i", &item.path, "-frames:v", "1"])
+                        .arg(&dst)
+                        .stdin(std::process::Stdio::null())
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false),
+                    None => false,
+                },
+            }
+        };
+        if !ok {
+            return None;
+        }
+    }
+    Some(dst.to_string_lossy().into_owned())
+}
+
+/// Stable cache path for a source file's thumbnail.
+fn wall_thumb_path(src: &str) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let dir = state_dir().join("wall-thumbs");
+    let _ = fs::create_dir_all(&dir);
+    let name = std::path::Path::new(src)
+        .file_stem()?
+        .to_string_lossy()
+        .into_owned();
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    src.hash(&mut hash);
+    Some(dir.join(format!("{}-{:08x}.png", name, hash.finish())))
+}
+
+static FFMPEG_BIN: OnceLock<Option<PathBuf>> = OnceLock::new();
+static MAGICK_BIN: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// ffmpeg from PATH, else a store checkout found by glob.
+fn ffmpeg_bin() -> Option<PathBuf> {
+    FFMPEG_BIN
+        .get_or_init(|| resolve_bin("ffmpeg").or_else(|| store_bin("ffmpeg", "bin/ffmpeg")))
+        .clone()
+}
+
+/// imagemagick from PATH, else a store checkout found by glob.
+fn magick_bin() -> Option<PathBuf> {
+    MAGICK_BIN
+        .get_or_init(|| resolve_bin("magick").or_else(|| store_bin("imagemagick", "bin/magick")))
+        .clone()
+}
+
+/// A plain PATH lookup that also tolerates a missing binary.
+fn resolve_bin(name: &str) -> Option<PathBuf> {
+    let probed = Command::new(name).arg("-version").output();
+    if probed.map(|o| o.status.success()).unwrap_or(false) {
+        return Some(PathBuf::from(name));
+    }
+    None
+}
+
+fn store_bin(prefix: &str, tail: &str) -> Option<PathBuf> {
+    let store = PathBuf::from("/nix/store");
+    let mut candidates: Vec<PathBuf> = fs::read_dir(&store)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().starts_with(prefix))
+                .unwrap_or(false)
+        })
+        .collect();
+    candidates.sort();
+    candidates
+        .into_iter()
+        .rev()
+        .map(|p| p.join(tail))
+        .find(|bin| bin.exists())
+}
+
+/// The raw WALLPAPER value recorded by the theme daemon ("none" until a wall
+/// has been applied or a theme declares one).
+fn active_wallpaper() -> String {
+    let path = PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+        .join(".local/state/theme/active.json");
+    let text = fs::read_to_string(path).unwrap_or_default();
+    text.split_once("\"WALLPAPER\"")
+        .and_then(|(_, tail)| tail.split_once(':'))
+        .map(|(_, v)| {
+            v.trim_start()
+                .trim_start_matches('"')
+                .split('"')
+                .next()
+                .unwrap_or("")
+        })
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Carousel start position; the slide that matches the applied wallpaper.
+fn active_wallpaper_index(walls: &[WallItem]) -> usize {
+    let active = active_wallpaper();
+    if active.is_empty() || active == "none" {
+        return 0;
+    }
+    walls
+        .iter()
+        .position(|w| w.path == active)
+        .or_else(|| {
+            let stem = std::path::Path::new(&active)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned());
+            walls.iter().position(|w| {
+                std::path::Path::new(&w.path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .as_deref()
+                    == stem.as_deref()
+            })
+        })
+        .unwrap_or(0)
+}
+
+/// Sets the current theme's WALLPAPER variable (or clears it), re-applies the
+/// theme, and repaints directly: awww for stills, mpvpaper for videos. Dynamic
+/// palettes are regenerated by theme-set from the new image.
+fn set_wallpaper(image: Option<String>, video: bool) {
+    std::thread::spawn(move || {
+        let theme = crate::theme::current_name();
+        if theme.is_empty() {
+            let mut s = Settings::write();
+            s.status = "No active theme — apply one first.".into();
+            return;
+        }
+        {
+            let mut s = Settings::write();
+            if s.theme_busy {
+                return;
+            }
+            s.theme_busy = true;
+            s.status = format!("Switching wallpaper for {theme}…");
+        }
+        let value = image.as_deref().unwrap_or("none");
+        let file = theme_file(&theme);
+        let original = fs::read_to_string(&file).unwrap_or_default();
+        let mut out = String::new();
+        let mut replaced = false;
+        for line in original.lines() {
+            let key = line.split('=').next().map(str::trim).unwrap_or("");
+            if key == "WALLPAPER" {
+                out.push_str(&format!("WALLPAPER={value}\n"));
+                replaced = true;
+            } else {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        if !replaced {
+            out.push_str(&format!("WALLPAPER={value}\n"));
+        }
+        // Dual write: the theme-set-visible copy and the live file, both
+        // updated with the new WALLPAPER so theme-set always sees it.
+        let mut wrote_any = false;
+        let mut failures: Vec<String> = vec![];
+        for target in theme_write_targets(&theme) {
+            match fs::write(&target, &out) {
+                Ok(()) => wrote_any = true,
+                Err(e) => failures.push(format!("{} ({e})", target.display())),
+            }
+        }
+        if !wrote_any {
+            let mut s = Settings::write();
+            s.status = format!(
+                "Could not write {theme}: {}; theme files are only writable when themesDir links a live folder.",
+                failures.join("; ")
+            );
+            s.theme_busy = false;
+            return;
+        }
+        {
+            let mut s = Settings::write();
+            s.themes = themes();
+            if failures.is_empty() {
+                s.status = format!("Wallpaper saved — running theme-set for {theme}…");
+            } else {
+                s.status = format!(
+                    "Wallpaper saved ({} failed) — running theme-set for {theme}…",
+                    failures.join("; ")
+                );
+            }
+        }
+        // Synchronous apply: theme-set regenerates every config, then awww
+        // paints the image — the pinned theme-manager paints its wallpaper via
+        // Quickshell, which is absent on this machine, so the repaint is ours.
+        let mut notes: Vec<String> = vec![];
+        match Command::new("theme-set").arg(&theme).output() {
+            Ok(o) if o.status.success() => {
+                note_theme_applied(&theme, &mut notes);
+            }
+            Ok(o) => notes.push(format!(
+                "theme-set failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+                    .chars()
+                    .take(120)
+                    .collect::<String>()
+            )),
+            Err(e) => notes.push(format!("Cannot launch theme-set: {e}")),
+        }
+        notes.push(paint_wallpaper(image.as_deref(), video));
+        let mut s = Settings::write();
+        s.status = notes.join(" ");
+        s.theme_busy = false;
+    });
+}
+
+/// theme-daemon applies its config generation async after the state write; a
+/// short wait with confirmation keeps the status honest about "applied".
+fn note_theme_applied(theme: &str, notes: &mut Vec<String>) {
+    for _ in 0..30 {
+        if crate::theme::current_name() == theme {
+            notes.push(format!("theme-set applied {theme}."));
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    notes.push(format!(
+        "theme-set requested {theme}, but theme-daemon has not confirmed it."
+    ));
+}
+
+/// Paints (or clears) the wallpaper — replacing the dead Quickshell path of
+/// the pinned theme-manager: awww paints stills, mpvpaper plays videos.
+fn paint_wallpaper(image: Option<&str>, video: bool) -> String {
+    match image {
+        Some(file) if video => {
+            kill_quiet("awww-daemon");
+            match Command::new("mpvpaper")
+                .args(["-o", "loop", "ALL"])
+                .arg(file)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(_) => "Video playing with mpvpaper.".into(),
+                Err(_) => {
+                    "mpvpaper is not installed yet — rebuild the system to add it.".into()
+                }
+            }
+        }
+        Some(file) => {
+            kill_quiet("mpvpaper");
+            let running = Command::new("awww")
+                .arg("query")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !running {
+                let daemon = Command::new("awww-daemon")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                if daemon.is_err() {
+                    return "awww-daemon could not start.".into();
+                }
+                std::thread::sleep(Duration::from_millis(600));
+            }
+            match Command::new("awww").arg("img").arg(file).output() {
+                Ok(o) if o.status.success() => "Painted with awww.".into(),
+                Ok(o) => format!(
+                    "awww img failed: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                        .chars()
+                        .take(120)
+                        .collect::<String>()
+                ),
+                Err(e) => format!("awww unavailable: {e}"),
+            }
+        }
+        None => {
+            kill_quiet("mpvpaper");
+            kill_quiet("awww-daemon");
+            "Wallpaper stopped (backdrop only).".into()
+        }
+    }
+}
+
+/// Terminates a process best-effort, silencing "no process found" noise.
+fn kill_quiet(name: &str) {
+    let _ = Command::new("killall")
+        .args([name, "--quiet"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+fn wallpaper_root() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Pictures/walls")
+}
+
+/// Opens the wallpapers folder in the desktop file manager.
+fn open_wallpaper_folder() {
+    let root = wallpaper_root();
+    let _ = fs::create_dir_all(&root);
+    let _ = Command::new("xdg-open")
+        .arg(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// Rescans the wallpaper folders, keeping the current selection when possible.
+fn refresh_wallpapers() {
+    let mut s = Settings::write();
+    let previous = s.wallpapers.get(s.wallpaper_index).map(|w| w.path.clone());
+    s.wallpapers = wallpapers();
+    s.wallpaper_index = previous
+        .and_then(|path| s.wallpapers.iter().position(|w| w.path == path))
+        .unwrap_or_else(|| active_wallpaper_index(&s.wallpapers));
+    let count = s.wallpapers.len();
+    s.wallpaper_index = s.wallpaper_index.min(count.saturating_sub(1));
+    let indices = wall_indices(&s);
+    if !indices.contains(&s.wallpaper_index) {
+        s.wallpaper_index = indices.first().copied().unwrap_or(0);
+    }
+    s.status = format!(
+        "Wallpaper library refreshed · {count} file{}.",
+        if count == 1 { "" } else { "s" }
+    );
+}
+
+/// Indices into s.wallpapers that match the sidebar folder filter.
+fn wall_indices(s: &Settings) -> Vec<usize> {
+    s.wallpapers
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| s.wallpaper_filter == "all" || s.wallpaper_filter == w.category)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Jumps the featured preview to a gallery row.
+fn select_wallpaper(index: usize) {
+    let mut s = Settings::write();
+    if index < s.wallpapers.len() {
+        s.wallpaper_index = index;
+    }
+}
+
+/// Switches the sidebar folder filter (clicking the active filter goes back to
+/// "All") and keeps the carousel on a visible slide.
+fn filter_wallpaper(category: String) {
+    let mut s = Settings::write();
+    s.wallpaper_filter = if s.wallpaper_filter == category {
+        "all".into()
+    } else {
+        category
+    };
+    let indices = wall_indices(&s);
+    if !indices.is_empty() && !indices.contains(&s.wallpaper_index) {
+        s.wallpaper_index = indices[0];
+    }
+}
+
+/// Trashes the selected wallpaper from ~/Pictures/walls (recoverable via the
+/// desktop Trash) and refreshes the list.
+fn remove_wallpaper(index: usize) {
+    let item = {
+        let mut s = Settings::write();
+        let item = s.wallpapers.get(index).cloned();
+        if let Some(item) = &item {
+            s.status = format!("Removing {}…", item.name);
+        }
+        item
+    };
+    let Some(item) = item else { return };
+    std::thread::spawn(move || {
+        let was_active = active_wallpaper() == item.path;
+        let out = Command::new("gio")
+            .args(["trash", "--", &item.path])
+            .output();
+        let status = match out {
+            Ok(o) if o.status.success() => {
+                let hint = if was_active {
+                    " It was active — apply another one to repaint."
+                } else {
+                    ""
+                };
+                format!(
+                    "Trashed {} (recoverable in the desktop Trash).{}",
+                    item.name, hint
+                )
+            }
+            Ok(o) => format!(
+                "Could not trash {}: {}",
+                item.name,
+                String::from_utf8_lossy(&o.stderr)
+                    .chars()
+                    .take(120)
+                    .collect::<String>()
+            ),
+            Err(e) => format!("Could not trash {}: {e}", item.name),
+        };
+        let mut s = Settings::write();
+        s.wallpapers = wallpapers();
+        let count = s.wallpapers.len();
+        s.wallpaper_index = s.wallpaper_index.min(count.saturating_sub(1));
+        let indices = wall_indices(&s);
+        if !indices.contains(&s.wallpaper_index) {
+            s.wallpaper_index = indices.first().copied().unwrap_or(0);
+        }
+        s.status = status;
+    });
+}
+
+/// The height of the featured preview. The gallery beside it matches it.
+const WALL_HERO_H: f32 = 220.0;
+
+/// Text drawn over the featured image, always light regardless of the theme.
+fn wallpaper_hero_text(text: impl Into<String>, size: f32) -> Text {
+    Text::new(text).size(size).color(Color::WHITE)
+}
+
+/// A small accent link used for secondary wallpaper actions.
+fn wallpaper_link(text: &str, color: Color, action: impl Fn() + 'static) -> Rectangle {
+    let key = format!("wall-link:{text}");
+    let ck = key.clone();
+    let content = Text::new(text)
+        .size(11.0)
+        .weight(Weight::SemiBold)
+        .color(color);
+    let width = match Widget::width(&content) {
+        amane::Size::Fixed(width) => width + 10.0,
+        _ => 80.0,
+    };
+    Rectangle::new()
+        .width(width)
+        .height(22.0)
+        .radius(8.0)
+        .cursor(Pointer)
+        .scale(crate::feedback::scale(&ck))
+        .on_click(move |b| {
+            if b == Button::Left {
+                crate::feedback::click(&ck);
+                action()
+            }
+        })
+        .align_child(Center, Center)
+        .child(content)
+}
+
+/// A filled primary action, full width beneath the featured preview.
+fn wallpaper_primary(text: &str, width: f32, action: impl Fn() + 'static) -> Rectangle {
+    let key = format!("wall-action:{text}");
+    let ck = key.clone();
+    let fill = blend_color(crate::theme::palette().cyan, crate::theme::background(), 0.14);
+    let color = crate::theme::readable(crate::theme::background(), fill, 4.5);
+    let content = Text::new(text)
+        .size(12.0)
+        .weight(Weight::SemiBold)
+        .color(color)
+        .elide();
+    Rectangle::new()
+        .width(width)
+        .height(38.0)
+        .radius(12.0)
+        .fill(fill)
+        .cursor(Pointer)
+        .scale(crate::feedback::scale(&ck))
+        .on_click(move |b| {
+            if b == Button::Left {
+                crate::feedback::click(&ck);
+                action()
+            }
+        })
+        .align_child(Center, Center)
+        .child(
+            Rectangle::new()
+                .width(width - 20.0)
+                .height(20.0)
+                .align_child(Center, Center)
+                .child(content),
+        )
+}
+
+/// A compact status pill drawn over a wallpaper image.
+fn wallpaper_badge(text: &str, width: f32, fill: Color) -> Rectangle {
+    let color = crate::theme::readable(crate::theme::background(), fill, 4.5);
+    Rectangle::new()
+        .width(width)
+        .height(22.0)
+        .radius(Full)
+        .fill(fill)
+        .align_child(Center, Center)
+        .child(
+            Text::new(text)
+                .size(9.5)
+                .weight(Weight::SemiBold)
+                .color(color),
+        )
+}
+
+/// A soft theme-coloured fill for media that has no decoded preview yet.
+fn wallpaper_placeholder(width: f32, height: f32, text: &str, radius: f32) -> Rectangle {
+    let palette = crate::theme::palette();
+    let top = blend_color(palette.blue, crate::theme::background(), 0.82);
+    let bottom = blend_color(palette.cyan, crate::theme::background(), 0.76);
+    Rectangle::new()
+        .width(width)
+        .height(height)
+        .radius(radius)
+        .clip()
+        .fill(amane::Gradient::linear(
+            135.0,
+            [(0.0, top), (1.0, bottom)],
+        ))
+        .align_child(Center, Center)
+        .child(
+            Text::new(text)
+                .size(11.0)
+                .color(crate::theme::readable(Color::WHITE, top, 3.0)),
+        )
+}
+
+fn wallpaper_chip_label(label: &str, count: usize) -> String {
+    format!("{label}  {count}")
+}
+
+fn wallpaper_chip_width(text: &str) -> f32 {
+    let content = Text::new(text).size(11.0);
+    let width = match Widget::width(&content) {
+        amane::Size::Fixed(width) => width,
+        _ => text.chars().count() as f32 * 6.8,
+    };
+    (width + 22.0).clamp(56.0, 176.0)
+}
+
+/// A folder/category filter chip. `filter` is the value stored in settings,
+/// which is distinct from the human-readable label ("all" vs "All").
+fn wallpaper_chip(
+    label: &str,
+    filter: String,
+    count: usize,
+    active_filter: bool,
+) -> Rectangle {
+    let key = format!("wall-filter:{filter}");
+    let ck = key.clone();
+    let text = wallpaper_chip_label(label, count);
+    let width = wallpaper_chip_width(&text);
+    let accent = crate::theme::palette().cyan;
+    let fill = if active_filter {
+        blend_color(accent, crate::theme::background(), 0.12)
+    } else {
+        setting_surface()
+    };
+    let color = if active_filter {
+        crate::theme::readable(crate::theme::background(), fill, 4.5)
+    } else {
+        settings_foreground()
+    };
+    let content = Text::new(text)
+        .size(11.0)
+        .weight(if active_filter {
+            Weight::SemiBold
+        } else {
+            Weight::Regular
+        })
+        .color(color)
+        .elide();
+    Rectangle::new()
+        .width(width)
+        .height(28.0)
+        .radius(14.0)
+        .fill(fill)
+        .cursor(Pointer)
+        .scale(crate::feedback::scale(&ck))
+        .on_click(move |b| {
+            if b == Button::Left {
+                crate::feedback::click(&ck);
+                filter_wallpaper(filter.clone());
+            }
+        })
+        .align_child(Center, Center)
+        .child(
+            Rectangle::new()
+                .width(width - 14.0)
+                .height(17.0)
+                .align_child(Center, Center)
+                .child(content),
+        )
+}
+
+/// The featured preview with an image scrim, filename, badges and apply action.
+fn wallpaper_hero(s: &Settings, width: f32, active: &str) -> Column {
+    let index = s
+        .wallpaper_index
+        .min(s.wallpapers.len().saturating_sub(1));
+    let item = s.wallpapers.get(index).cloned();
+    let selected_active = item
+        .as_ref()
+        .is_some_and(|w| w.path == active);
+    let display = item
+        .as_ref()
+        .map(wall_display)
+        .unwrap_or_default();
+
+    let mut layers: Vec<Box<dyn Widget>> = vec![];
+    if display.is_empty() {
+        let text = match &item {
+            Some(w) if w.video => "Preparing video preview…",
+            Some(_) => "Preparing preview…",
+            None => "No wallpapers in this folder",
+        };
+        layers.push(Box::new(wallpaper_placeholder(
+            width,
+            WALL_HERO_H,
+            text,
+            16.0,
+        )));
+    } else {
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(width)
+                .height(WALL_HERO_H)
+                .radius(16.0)
+                .clip()
+                .fill(
+                    amane::Image::cover(display)
+                        .thumbnail(width as u32, WALL_HERO_H as u32),
+                ),
+        ));
+    }
+
+    let mut badges = 12.0;
+    if selected_active {
+        layers.push(Box::new(
+            wallpaper_badge("ACTIVE", 62.0, crate::theme::palette().cyan)
+                .translate(badges, 12.0),
+        ));
+        badges += 68.0;
+    }
+    if let Some(w) = &item {
+        if w.video {
+            layers.push(Box::new(
+                wallpaper_badge("VIDEO", 58.0, Color::rgba(0, 0, 0, 170))
+                    .translate(badges, 12.0),
+            ));
+        }
+    }
+
+    if let Some(w) = &item {
+        // A dark gradient keeps the caption readable over bright wallpapers.
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(width)
+                .height(96.0)
+                .translate(0.0, WALL_HERO_H - 96.0)
+                .fill(amane::Gradient::linear(
+                    0.0,
+                    [
+                        (0.0, Color::rgba(0, 0, 0, 205)),
+                        (1.0, Color::rgba(0, 0, 0, 0)),
+                    ],
+                )),
+        ));
+        let detail = format!(
+            "{}  ·  {}",
+            w.category,
+            if w.video { "Video" } else { "Image" }
+        );
+        let caption = Column::new(children![
+            Rectangle::new()
+                .width((width - 28.0).max(20.0))
+                .height(18.0)
+                .child(wallpaper_hero_text(w.name.clone(), 14.0).weight(Weight::SemiBold).elide()),
+            Rectangle::new()
+                .width((width - 28.0).max(20.0))
+                .height(14.0)
+                .child(
+                    wallpaper_hero_text(detail, 10.5)
+                        .color(Color::rgba(255, 255, 255, 190))
+                        .elide(),
+                ),
+        ])
+        .gap(2.0)
+        .width((width - 28.0).max(20.0));
+        layers.push(Box::new(
+            Rectangle::new()
+                .width((width - 28.0).max(20.0))
+                .height(38.0)
+                .translate(14.0, WALL_HERO_H - 50.0)
+                .child(caption),
+        ));
+    }
+
+    if selected_active {
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(width)
+                .height(WALL_HERO_H)
+                .radius(16.0)
+                .border(2.0, crate::theme::palette().cyan),
+        ));
+    }
+
+    let key = format!(
+        "wall-hero:{}",
+        item.as_ref().map(|w| w.path.as_str()).unwrap_or("empty")
+    );
+    let ck = key.clone();
+    let apply = item.clone();
+    let mut preview = Rectangle::new()
+        .width(width)
+        .height(WALL_HERO_H)
+        .radius(16.0)
+        .clip()
+        .fill(setting_surface())
+        .scale(crate::feedback::scale(&key));
+    if let Some(item) = apply {
+        preview = preview.cursor(Pointer).on_click(move |b| {
+            if b == Button::Left {
+                crate::feedback::click(&ck);
+                set_wallpaper(Some(item.path.clone()), item.video);
+            }
+        });
+    }
+    let preview = preview.child(
+        amane::Stack::new(layers)
+            .width(width)
+            .height(WALL_HERO_H),
+    );
+
+    let mut actions: Vec<Box<dyn Widget>> = vec![];
+    match &item {
+        Some(w) => {
+            let apply = w.clone();
+            let label = if selected_active {
+                "Reapply wallpaper"
+            } else if w.video {
+                "Play video wallpaper"
+            } else {
+                "Apply wallpaper"
+            };
+            actions.push(Box::new(wallpaper_primary(label, width, move || {
+                set_wallpaper(Some(apply.path.clone()), apply.video);
+            })));
+            let remove_index = index;
+            actions.push(Box::new(
+                Row::new(children![
+                    wallpaper_link("Stop wallpaper", settings_secondary(), || {
+                        set_wallpaper(None, false)
+                    }),
+                    wallpaper_link(
+                        "Remove file",
+                        crate::theme::readable(
+                            crate::theme::palette().red,
+                            setting_surface(),
+                            4.5
+                        ),
+                        move || remove_wallpaper(remove_index),
+                    ),
+                ])
+                .gap(14.0)
+                .justify(amane::SpaceBetween)
+                .width(width),
+            ));
+        }
+        None => {
+            actions.push(Box::new(wallpaper_primary(
+                "Open wallpapers folder",
+                width,
+                open_wallpaper_folder,
+            )));
+            actions.push(Box::new(
+                Row::new(children![
+                    wallpaper_link(
+                        "Rescan library",
+                        crate::theme::palette().cyan,
+                        refresh_wallpapers
+                    ),
+                    wallpaper_link("Stop wallpaper", settings_secondary(), || {
+                        set_wallpaper(None, false)
+                    }),
+                ])
+                .gap(14.0)
+                .justify(amane::SpaceBetween)
+                .width(width),
+            ));
+        }
+    }
+
+    let mut rows: Vec<Box<dyn Widget>> = vec![Box::new(preview)];
+    rows.extend(actions);
+    Column::new(rows).width(width).gap(9.0)
+}
+
+/// A single row in the gallery: thumbnail, name, folder/type and active dot.
+fn wallpaper_gallery_row(
+    s: &Settings,
+    index: usize,
+    width: f32,
+    active: &str,
+) -> Rectangle {
+    let Some(item) = s.wallpapers.get(index).cloned() else {
+        return Rectangle::new().width(width).height(0.0);
+    };
+    let display = wall_display(&item);
+    let selected = s.wallpaper_index == index;
+    let is_active = item.path == active;
+    let key = format!("wall-row:{}", item.path);
+    let ck = key.clone();
+    let thumb_w = 66.0;
+    let thumb_h = 44.0;
+    let fill = if selected {
+        blend_color(
+            crate::theme::palette().cyan,
+            crate::theme::background(),
+            0.80,
+        )
+    } else {
+        setting_surface()
+    };
+    let thumb = if display.is_empty() {
+        wallpaper_placeholder(thumb_w, thumb_h, "…", 8.0)
+    } else {
+        Rectangle::new()
+            .width(thumb_w)
+            .height(thumb_h)
+            .radius(8.0)
+            .clip()
+            .fill(amane::Image::cover(display).thumbnail(thumb_w as u32, thumb_h as u32))
+    };
+    let info_w = (width - 14.0 - thumb_w - 10.0 - if is_active { 18.0 } else { 0.0 })
+        .max(36.0);
+    let detail = format!(
+        "{}  ·  {}",
+        item.category,
+        if item.video { "Video" } else { "Image" }
+    );
+    let info = Column::new(children![
+        Rectangle::new()
+            .width(info_w)
+            .height(16.0)
+            .child(
+                label(item.name.clone())
+                    .size(12.0)
+                    .weight(if selected {
+                        Weight::SemiBold
+                    } else {
+                        Weight::Regular
+                    })
+                    .elide(),
+            ),
+        Rectangle::new()
+            .width(info_w)
+            .height(13.0)
+            .child(
+                label(detail)
+                    .size(10.0)
+                    .color(settings_secondary())
+                    .elide(),
+            ),
+    ])
+    .gap(2.0)
+    .width(info_w);
+    let mut contents: Vec<Box<dyn Widget>> = vec![
+        Box::new(thumb) as Box<dyn Widget>,
+        Box::new(info) as Box<dyn Widget>,
+    ];
+    if is_active {
+        contents.push(Box::new(
+            Rectangle::new()
+                .width(8.0)
+                .height(8.0)
+                .radius(Full)
+                .fill(crate::theme::palette().cyan),
+        ));
+    }
+
+    let mut row = Rectangle::new()
+        .width(width)
+        .height(58.0)
+        .padding(7.0)
+        .radius(12.0)
+        .fill(fill)
+        .cursor(Pointer)
+        .scale(crate::feedback::scale(&key));
+    if selected {
+        row = row.border(
+            1.0,
+            blend_color(
+                crate::theme::palette().cyan,
+                crate::theme::background(),
+                0.35,
+            ),
+        );
+    }
+    row.on_click(move |b| {
+        if b == Button::Left {
+            crate::feedback::click(&ck);
+            select_wallpaper(index);
+        }
+    })
+    .child(Row::new(contents).gap(10.0).align(Center))
+}
+
+/// The scannable wallpaper list beside the featured preview.
+fn wallpaper_gallery(s: &Settings, width: f32, active: &str) -> Column {
+    let indices = wall_indices(s);
+    let mut rows: Vec<Box<dyn Widget>> = vec![];
+    for index in &indices {
+        rows.push(Box::new(wallpaper_gallery_row(
+            s, *index, width, active,
+        )));
+    }
+    let list: Box<dyn Widget> = if rows.is_empty() {
+        Box::new(
+            Rectangle::new()
+                .width(width)
+                .height(110.0)
+                .radius(14.0)
+                .fill(setting_surface())
+                .align_child(Center, Center)
+                .child(
+                    Column::new(children![
+                        label("No media files here").size(12.0).weight(Weight::SemiBold),
+                        label("Add images or videos to ~/Pictures/walls")
+                            .size(10.0)
+                            .color(settings_secondary()),
+                        wallpaper_link(
+                            "Open folder",
+                            crate::theme::palette().cyan,
+                            open_wallpaper_folder
+                        ),
+                    ])
+                    .gap(5.0)
+                    .align(Center),
+                ),
+        )
+    } else {
+        Box::new(
+            ScrollArea::new(
+                "wall-gallery-scroll",
+                Column::new(rows).width(width - 8.0).gap(6.0),
+            )
+            .width(width)
+            .height(WALL_HERO_H + 39.0),
+        )
+    };
+    let heading = Row::new(children![
+        Column::new(children![
+            label("Gallery").size(13.0).weight(Weight::SemiBold),
+            label(format!("{} shown", indices.len()))
+                .size(10.0)
+                .color(settings_secondary()),
+        ])
+        .gap(1.0),
+        Row::new(children![
+            wallpaper_link(
+                "Rescan",
+                crate::theme::palette().cyan,
+                refresh_wallpapers
+            ),
+            wallpaper_link("Open", settings_secondary(), open_wallpaper_folder),
+        ])
+        .gap(8.0),
+    ])
+    .justify(amane::SpaceBetween)
+    .align(Center)
+    .width(width);
+    Column::new(vec![Box::new(heading) as Box<dyn Widget>, list])
+        .gap(8.0)
+        .width(width)
+}
+
+/// Filters, featured preview and gallery. This replaces the old carousel so the
+/// selected wallpaper stays visible while browsing the whole folder.
+fn wallpaper_section(s: &Settings, width: f32) -> Column {
+    let side_w = (width * 0.38).clamp(188.0, 244.0);
+    let main_w = (width - side_w - 18.0).max(180.0);
+
+    let mut categories: Vec<String> = s.wallpapers.iter().map(|w| w.category.clone()).collect();
+    categories.sort();
+    categories.dedup();
+    let mut chips: Vec<(Box<dyn Widget>, f32)> = vec![];
+    let all_text = wallpaper_chip_label("All", s.wallpapers.len());
+    chips.push((
+        Box::new(wallpaper_chip(
+            "All",
+            "all".into(),
+            s.wallpapers.len(),
+            s.wallpaper_filter == "all",
+        )),
+        wallpaper_chip_width(&all_text),
+    ));
+    for cat in &categories {
+        let count = s
+            .wallpapers
+            .iter()
+            .filter(|w| &w.category == cat)
+            .count();
+        if count == 0 {
+            continue;
+        }
+        let text = wallpaper_chip_label(cat, count);
+        chips.push((
+            Box::new(wallpaper_chip(
+                cat,
+                cat.clone(),
+                count,
+                s.wallpaper_filter == *cat,
+            )),
+            wallpaper_chip_width(&text),
+        ));
+    }
+    let mut chip_rows: Vec<Box<dyn Widget>> = vec![];
+    let mut row: Vec<Box<dyn Widget>> = vec![];
+    let mut row_width = 0.0;
+    for (chip, chip_width) in chips {
+        if !row.is_empty() && row_width + 6.0 + chip_width > width {
+            chip_rows.push(Box::new(Row::new(row).gap(6.0)));
+            row = vec![];
+            row_width = 0.0;
+        }
+        if !row.is_empty() {
+            row_width += 6.0;
+        }
+        row.push(chip);
+        row_width += chip_width;
+    }
+    if !row.is_empty() {
+        chip_rows.push(Box::new(Row::new(row).gap(6.0)));
+    }
+
+    let head = Column::new(chip_rows).gap(6.0);
+    let active = active_wallpaper();
+    let parts: Vec<Box<dyn Widget>> = children![
+        wallpaper_hero(s, main_w, &active),
+        Rectangle::new().width(1.0).height(WALL_HERO_H + 62.0).fill(setting_surface()),
+        wallpaper_gallery(s, side_w, &active)
+    ];
+
+    Column::new(children![
+        head,
+        Row::new(parts).gap(14.0).align(Start)
+    ])
+    .gap(12.0)
+}
+
 fn section_label(title: &str, detail: &str, width: f32) -> Row {
     Row::new(children![
         label(title).size(16.0).weight(Weight::SemiBold),
@@ -1352,5 +2912,33 @@ mod tests {
     fn theme_hex_parser_accepts_current_theme_format() {
         assert_eq!(parse_hex("#81A1C1"), Some(Color::rgb(129, 161, 193)));
         assert_eq!(parse_hex("no"), None);
+    }
+    #[test]
+    fn theme_merge_preserves_layout_and_updates_values() {
+        let original = "# aquarium theme\nVARIANT=dark\n\n# base_16\nBASE00 = '#20202A'\nWHITE         =#C6D0E9\nCORNER_RADIUS=20\n";
+        let out = merge_theme_values(
+            original,
+            &[
+                ("BASE00".into(), "#131C19".into()),
+                ("WHITE".into(), " #444F4C ".into()),
+            ],
+        );
+        assert_eq!(
+            out,
+            "# aquarium theme\nVARIANT=dark\n\n# base_16\nBASE00 =#131C19\nWHITE         =#444F4C\nCORNER_RADIUS=20\n"
+        );
+    }
+    #[test]
+    fn theme_merge_appends_new_keys() {
+        let out = merge_theme_values("VARIANT=dark\n", &[("MODE".into(), "dynamic".into())]);
+        assert_eq!(out, "VARIANT=dark\nMODE=dynamic\n");
+    }
+    #[test]
+    fn theme_merge_skips_comment_lines() {
+        let out = merge_theme_values(
+            "# x=y\nBASE00=#20202A",
+            &[("BASE00".into(), "#000000".into())],
+        );
+        assert_eq!(out, "# x=y\nBASE00=#000000\n");
     }
 }

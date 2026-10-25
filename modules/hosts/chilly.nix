@@ -21,10 +21,13 @@ in
             nixosModules.locale
             nixosModules.audio
             nixosModules.hardware
+            nixosModules.cuda
             nixosModules.users
             nixosModules.services
             nixosModules.packages
             nixosModules.nix
+            nixosModules.desktop
+            # nixosModules.cuda
 
             # Programs / desktop
             nixosModules.mango
@@ -35,6 +38,8 @@ in
             nixosModules.amane
             nixosModules.theme_manager
             nixosModules.firefox
+            nixosModules.emacs
+            nixosModules.tor
 
             # Programs / terminal
             nixosModules.zsh

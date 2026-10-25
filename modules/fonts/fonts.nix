@@ -14,6 +14,7 @@
                 pkgs.nerd-fonts.geist-mono
                 pkgs.nerd-fonts.jetbrains-mono
                 pkgs.nerd-fonts.iosevka
+                pkgs.nerd-fonts.droid-sans-mono
                 pkgs.material-symbols
 
                 # Target Script Coverage

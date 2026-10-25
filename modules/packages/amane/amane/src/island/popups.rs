@@ -12,6 +12,7 @@ pub enum Popup {
     Media,
     Volume,
     Brightness,
+    Color,
     #[allow(dead_code)] // retained renderer compatibility; activation is removed
     Workspace(i64),
 }
@@ -34,11 +35,18 @@ struct Hover {
     last_levels: (u8, u8),
     calendar_day: String,
     month_offset: i32,
+    /// HSV picker state: hue in [0, 360), saturation/value in [0, 1].
+    hue: f32,
+    saturation: f32,
+    value: f32,
+    /// The format last copied and when, so only that row shows "Copied".
+    copied: Option<(ColorFormat, Instant)>,
 }
 
 impl Service for Hover {
     fn new() -> Self {
         let (calendar_day, month, today, calendar) = local_calendar();
+        let (hue, saturation, value) = rgb_to_hsv(crate::theme::palette().blue);
         Self {
             kind: Popup::Calendar,
             source: origin(Popup::Calendar),
@@ -59,6 +67,10 @@ impl Service for Hover {
             last_levels: (0, 0),
             volume: Animation::new(0.0).duration(Duration::from_millis(220)),
             brightness: Animation::new(0.0).duration(Duration::from_millis(260)),
+            hue,
+            saturation,
+            value,
+            copied: None,
         }
     }
     fn interval() -> Duration {
@@ -95,7 +107,12 @@ impl Service for Hover {
             self.motion.to(0.0);
             return true;
         }
-        changed
+        // The copied badge clears itself without any pointer activity.
+        let copied_cleared = self
+            .copied
+            .take_if(|(_, at)| at.elapsed() >= Duration::from_millis(1500))
+            .is_some();
+        changed || copied_cleared
     }
 }
 
@@ -141,6 +158,29 @@ pub fn show(kind: Popup) {
     exposure::reveal();
     hover(kind, true);
     pointer_presence(false);
+}
+
+/// Opens the colour popup preset to `color`, so the picker can hand a sampled
+/// pixel over for the user to copy as hex or rgb. Expands a collapsed island
+/// (the picker tucked it away) so the popup is actually visible.
+pub fn color_at(color: Color) {
+    {
+        let mut state = Hover::write();
+        let (hue, saturation, value) = rgb_to_hsv(color);
+        state.hue = hue;
+        state.saturation = saturation;
+        state.value = value;
+        state.copied = None;
+    }
+    {
+        let mut island = Island::write();
+        island.expanded = true;
+        island.leave_deadline = None;
+        island.osd_until = Instant::now();
+        island.sync();
+    }
+    exposure::reveal();
+    show(Popup::Color);
 }
 pub fn hover(kind: Popup, inside: bool) {
     if matches!(kind, Popup::Workspace(_)) {
@@ -204,6 +244,9 @@ fn anchor(kind: Popup) -> f32 {
         Popup::Media => media_start + TRANSPORT_WIDTH / 2.0,
         Popup::Volume => controls_start + CONTROL_WIDTH / 2.0,
         Popup::Brightness => controls_start + CONTROL_WIDTH + CONTROL_GAP + CONTROL_WIDTH / 2.0,
+        Popup::Color => {
+            controls_start + (CONTROL_WIDTH + CONTROL_GAP) * 2.0 + CONTROL_WIDTH / 2.0
+        }
     }
 }
 
@@ -216,6 +259,19 @@ fn geometry(kind: Popup, weeks: usize) -> (f32, f32, f32) {
         Popup::Media => (352.0, 204.0),
         Popup::Workspace(id) => (328.0, workspaces::grid_height(id)),
         Popup::Volume | Popup::Brightness => (88.0, 40.0 + 154.0 + 24.0 + 20.0 + 16.0),
+        Popup::Color => (
+            PICKER_WIDTH + POPUP_PADDING * 2.0,
+            PICKER_SQUARE_H
+                + PICKER_GAP
+                + PICKER_HUE_H
+                + PICKER_GAP
+                + PICKER_ROW_H
+                + PICKER_GAP
+                + PICKER_ROW_H
+                + PICKER_GAP
+                + PICKER_ROW_H
+                + POPUP_PADDING * 2.0,
+        ),
     };
     let x = (anchor(kind) - width / 2.0)
         .clamp(ROW_PADDING, PANEL.0 - ROW_PADDING - width)
@@ -254,7 +310,7 @@ fn origin(kind: Popup) -> (f32, f32, f32, f32) {
         Popup::Calendar => CLOCK_WIDTH,
         Popup::Workspace(id) => workspaces::bounds(id).1,
         Popup::Media => TRANSPORT_WIDTH,
-        Popup::Volume | Popup::Brightness => CONTROL_WIDTH,
+        Popup::Volume | Popup::Brightness | Popup::Color => CONTROL_WIDTH,
     };
     (
         anchor(kind) - width / 2.0,
@@ -364,6 +420,7 @@ pub(super) fn scene(bar_width: f32, bar_height: f32, expanded: bool) -> Scene {
         Popup::Media => media_widget(),
         Popup::Volume => vertical(Osd::Volume, state.volume.value()),
         Popup::Brightness => vertical(Osd::Brightness, state.brightness.value()),
+        Popup::Color => color_picker(&state),
     };
     // Readable content is drawn last, independently of the moving alpha mask.
     let content = Rectangle::new()
@@ -662,6 +719,295 @@ fn vertical_percent(y: f32) -> u8 {
     ((1.0 - y / 154.0).clamp(0.0, 1.0) * 100.0).round() as u8
 }
 
+// Content budgets of the HSV picker: saturation/value square, hue strip and
+// the copy row, all sharing one width inside the popup's padding.
+const PICKER_WIDTH: f32 = 248.0;
+const PICKER_SQUARE_H: f32 = 140.0;
+const PICKER_HUE_H: f32 = 18.0;
+const PICKER_ROW_H: f32 = 40.0;
+const PICKER_GAP: f32 = 10.0;
+
+fn color_picker(state: &Hover) -> Column {
+    let (hue, saturation, value) = (state.hue, state.saturation, state.value);
+    let picked = hsv_to_rgb(hue, saturation, value);
+    // Hue base, white left-to-right, black bottom-to-top: the classic SV plane.
+    let square = Rectangle::new()
+        .width(PICKER_WIDTH)
+        .height(PICKER_SQUARE_H)
+        .radius(12.0)
+        .clip()
+        .fill(hsv_to_rgb(hue, 1.0, 1.0))
+        .cursor(Pointer)
+        .on_drag(|point| set_sv(point.x, point.y))
+        .on_click(|_| {})
+        .child(
+            Rectangle::new()
+                .width(PICKER_WIDTH)
+                .height(PICKER_SQUARE_H)
+                .fill(Gradient::linear(
+                    90.0,
+                    [(0.0, Color::WHITE), (1.0, Color::TRANSPARENT)],
+                ))
+                .child(
+                    Rectangle::new()
+                        .width(PICKER_WIDTH)
+                        .height(PICKER_SQUARE_H)
+                        .fill(Gradient::linear(
+                            0.0,
+                            [(0.0, Color::BLACK), (1.0, Color::TRANSPARENT)],
+                        )),
+                ),
+        );
+    let indicator = Rectangle::new()
+        .width(14.0)
+        .height(14.0)
+        .radius(Full)
+        .border(2.0, Color::WHITE)
+        .translate(
+            saturation * PICKER_WIDTH - 7.0,
+            (1.0 - value) * PICKER_SQUARE_H - 7.0,
+        );
+    let square = amane::Stack::new(vec![
+        Box::new(square) as Box<dyn amane::Widget>,
+        Box::new(indicator),
+    ])
+    .width(PICKER_WIDTH)
+    .height(PICKER_SQUARE_H);
+    let hue_stops: Vec<(f32, Color)> = (0..=6)
+        .map(|step| (step as f32 / 6.0, hsv_to_rgb(step as f32 * 60.0, 1.0, 1.0)))
+        .collect();
+    let strip = Rectangle::new()
+        .width(PICKER_WIDTH)
+        .height(PICKER_HUE_H)
+        .radius(Full)
+        .clip()
+        .fill(Gradient::linear(90.0, hue_stops))
+        .cursor(Pointer)
+        .on_drag(|point| set_hue(point.x))
+        .on_click(|_| {});
+    let knob = Rectangle::new()
+        .width(10.0)
+        .height(10.0)
+        .radius(Full)
+        .fill(picked)
+        .border(2.0, Color::WHITE)
+        .translate(hue / 360.0 * PICKER_WIDTH - 5.0, (PICKER_HUE_H - 10.0) / 2.0);
+    let strip = amane::Stack::new(vec![
+        Box::new(strip) as Box<dyn amane::Widget>,
+        Box::new(knob),
+    ])
+    .width(PICKER_WIDTH)
+    .height(PICKER_HUE_H);
+    let hex = picked.hex();
+    let rgb = format!(
+        "rgb({},{},{})",
+        picked.red(),
+        picked.green(),
+        picked.blue()
+    );
+    let (hue_deg, sat, light) = rgb_to_hsl(picked);
+    let hsl = format!("hsl({hue_deg}, {sat}%, {light}%)");
+    let copied_format = state.copied.map(|(format, _)| format);
+    let copy_row = |text: String, key: &'static str, format: ColorFormat| {
+        // Only the row whose format was actually copied shows the badge.
+        let copy_label = if copied_format == Some(format) {
+            "Copied"
+        } else {
+            "Click to copy"
+        };
+        Rectangle::new()
+            .width(PICKER_WIDTH)
+            .height(PICKER_ROW_H)
+            .radius(12.0)
+            .scale(crate::feedback::scale(key))
+            .align_child(Start, Center)
+            .cursor(Pointer)
+            .on_click(move |button| {
+                if matches!(button, Button::Left) {
+                    crate::feedback::click(key);
+                    copy_picked(format);
+                }
+            })
+            .child(
+                Row::new(children![
+                    Rectangle::new()
+                        .width(32.0)
+                        .height(32.0)
+                        .radius(10.0)
+                        .fill(picked),
+                    Column::new(children![
+                        Text::new(&text)
+                            .size(14.0)
+                            .weight(Weight::SemiBold)
+                            .color(crate::theme::palette().foreground),
+                        Text::new(copy_label)
+                            .size(12.0)
+                            .color(crate::theme::palette().secondary),
+                    ])
+                    .width(148.0)
+                    .gap(2.0)
+                    .align(Start),
+                    icon("\u{e14d}", crate::theme::palette().secondary, 20.0),
+                ])
+                .gap(12.0)
+                .align(Center),
+            )
+    };
+    let hex_row = copy_row(hex.clone(), "picker:copy-hex", ColorFormat::Hex);
+    let rgb_row = copy_row(rgb.clone(), "picker:copy-rgb", ColorFormat::Rgb);
+    let hsl_row = copy_row(hsl.clone(), "picker:copy-hsl", ColorFormat::Hsl);
+    Column::new(children![square, strip, hex_row, rgb_row, hsl_row])
+        .width(PICKER_WIDTH)
+        .gap(PICKER_GAP)
+}
+
+fn set_hue(x: f32) {
+    hover(Popup::Color, true);
+    {
+        let mut state = Hover::write();
+        state.hue = hue_at(x);
+        state.copied = None;
+    }
+    amane::request_frame();
+}
+
+fn set_sv(x: f32, y: f32) {
+    hover(Popup::Color, true);
+    {
+        let mut state = Hover::write();
+        let (saturation, value) = sv_at(x, y);
+        state.saturation = saturation;
+        state.value = value;
+        state.copied = None;
+    }
+    amane::request_frame();
+}
+
+fn hue_at(x: f32) -> f32 {
+    (x / PICKER_WIDTH * 360.0).clamp(0.0, 360.0) % 360.0
+}
+
+fn sv_at(x: f32, y: f32) -> (f32, f32) {
+    (
+        (x / PICKER_WIDTH).clamp(0.0, 1.0),
+        (1.0 - y / PICKER_SQUARE_H).clamp(0.0, 1.0),
+    )
+}
+
+fn copy_picked(format: ColorFormat) {
+    let text = {
+        let state = Hover::read();
+        let color = hsv_to_rgb(state.hue, state.saturation, state.value);
+        match format {
+            ColorFormat::Hex => color.hex(),
+            ColorFormat::Rgb => {
+                format!("rgb({},{},{})", color.red(), color.green(), color.blue())
+            }
+            ColorFormat::Hsl => {
+                let (hue, saturation, light) = rgb_to_hsl(color);
+                format!("hsl({hue}, {saturation}%, {light}%)")
+            }
+        }
+    };
+    // wl-copy forks a clipboard server and must not inherit captured pipes.
+    amane::spawn(&format!("wl-copy --type text/plain '{text}'"));
+    let dir = super::settings::state_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("picked-color"), format!("{text}\n"));
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
+        });
+    let hook = config.join("amane/hooks/color");
+    if hook.is_file() {
+        let path = hook.display().to_string().replace('\'', "'\\''");
+        amane::spawn(&format!("'{path}' '{text}'"));
+    }
+    Hover::write().copied = Some((format, Instant::now()));
+    amane::request_frame();
+}
+
+/// The textual forms the colour popup can copy.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ColorFormat {
+    Hex,
+    Rgb,
+    Hsl,
+}
+
+/// Converts a colour to CSS `hsl`: hue in degrees, saturation/lightness as
+/// rounded percentages.
+fn rgb_to_hsl(color: Color) -> (u32, u32, u32) {
+    let r = f32::from(color.red()) / 255.0;
+    let g = f32::from(color.green()) / 255.0;
+    let b = f32::from(color.blue()) / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let light = (max + min) / 2.0;
+    let delta = max - min;
+    let hue = if delta == 0.0 {
+        0.0
+    } else if max == r {
+        60.0 * (((g - b) / delta) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    let hue = hue.rem_euclid(360.0);
+    let saturation = if delta == 0.0 {
+        0.0
+    } else {
+        delta / (1.0 - (2.0 * light - 1.0).abs())
+    };
+    (
+        hue.round() as u32,
+        (saturation * 100.0).round() as u32,
+        (light * 100.0).round() as u32,
+    )
+}
+
+fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> Color {
+    let hue = hue.rem_euclid(360.0);
+    let saturation = saturation.clamp(0.0, 1.0);
+    let value = value.clamp(0.0, 1.0);
+    let chroma = value * saturation;
+    let section = hue / 60.0;
+    let secondary = chroma * (1.0 - (section.rem_euclid(2.0) - 1.0).abs());
+    let (r, g, b) = match section as u32 {
+        0 => (chroma, secondary, 0.0),
+        1 => (secondary, chroma, 0.0),
+        2 => (0.0, chroma, secondary),
+        3 => (0.0, secondary, chroma),
+        4 => (secondary, 0.0, chroma),
+        _ => (chroma, 0.0, secondary),
+    };
+    let match_value = value - chroma;
+    let channel = |component: f32| ((component + match_value) * 255.0).round() as u8;
+    Color::rgb(channel(r), channel(g), channel(b))
+}
+
+fn rgb_to_hsv(color: Color) -> (f32, f32, f32) {
+    let r = f32::from(color.red()) / 255.0;
+    let g = f32::from(color.green()) / 255.0;
+    let b = f32::from(color.blue()) / 255.0;
+    let maximum = r.max(g).max(b);
+    let minimum = r.min(g).min(b);
+    let delta = maximum - minimum;
+    let hue = if delta == 0.0 {
+        0.0
+    } else if maximum == r {
+        60.0 * ((g - b) / delta).rem_euclid(6.0)
+    } else if maximum == g {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    let saturation = if maximum == 0.0 { 0.0 } else { delta / maximum };
+    (hue, saturation, maximum)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,6 +1037,7 @@ mod tests {
             Popup::Media,
             Popup::Volume,
             Popup::Brightness,
+            Popup::Color,
         ] {
             let (x, y, w, h) = origin(kind);
             assert!(x >= 0.0 && x + w <= PANEL.0);
@@ -710,8 +1057,8 @@ mod tests {
     fn row_budgets_and_popup_anchors_stay_balanced() {
         assert_eq!(
             ROW_PADDING * 2.0
-                + CONTROL_WIDTH * 2.0
-                + CONTROL_GAP
+                + CONTROL_WIDTH * 3.0
+                + CONTROL_GAP * 2.0
                 + MEDIA_WIDTH
                 + CLOCK_WIDTH
                 + TRANSPORT_WIDTH
@@ -721,11 +1068,13 @@ mod tests {
             PANEL.0
         );
         assert!(anchor(Popup::Volume) < anchor(Popup::Calendar));
+        assert!(anchor(Popup::Brightness) < anchor(Popup::Color));
         for kind in [
             Popup::Calendar,
             Popup::Media,
             Popup::Volume,
             Popup::Brightness,
+            Popup::Color,
         ] {
             let (w, _, x) = geometry(kind, 6);
             assert!(x >= ROW_PADDING);
@@ -757,6 +1106,55 @@ mod tests {
         assert_eq!(vertical_percent(154.0), 0);
         assert_eq!(vertical_percent(200.0), 0);
     }
+
+    #[test]
+    fn hsv_corners_match_primary_colors() {
+        assert_eq!(hsv_to_rgb(0.0, 1.0, 1.0), Color::RED);
+        assert_eq!(hsv_to_rgb(120.0, 1.0, 1.0), Color::GREEN);
+        assert_eq!(hsv_to_rgb(240.0, 1.0, 1.0), Color::BLUE);
+        assert_eq!(hsv_to_rgb(0.0, 0.0, 1.0), Color::WHITE);
+        assert_eq!(hsv_to_rgb(0.0, 1.0, 0.0), Color::BLACK);
+        assert_eq!(hsv_to_rgb(360.0, 1.0, 1.0), Color::RED);
+    }
+
+    #[test]
+    fn hsv_roundtrips_theme_channels() {
+        for color in [
+            Color::rgb(129, 161, 193),
+            Color::rgb(1, 2, 3),
+            Color::rgb(250, 244, 237),
+            Color::rgb(191, 97, 106),
+        ] {
+            let (hue, saturation, value) = rgb_to_hsv(color);
+            let back = hsv_to_rgb(hue, saturation, value);
+            let near = |a: u8, b: u8| (i32::from(a) - i32::from(b)).abs() <= 1;
+            assert!(near(back.red(), color.red()));
+            assert!(near(back.green(), color.green()));
+            assert!(near(back.blue(), color.blue()));
+        }
+    }
+
+    #[test]
+    fn picker_coordinates_clamp_to_hue_and_sv_ranges() {
+        assert_eq!(hue_at(-20.0), 0.0);
+        assert_eq!(hue_at(0.0), 0.0);
+        assert_eq!(hue_at(PICKER_WIDTH), 0.0); // wraps back to zero
+        assert!((hue_at(PICKER_WIDTH / 2.0) - 180.0).abs() < f32::EPSILON);
+        assert_eq!(sv_at(0.0, 0.0), (0.0, 1.0));
+        assert_eq!(sv_at(PICKER_WIDTH, PICKER_SQUARE_H), (1.0, 0.0));
+        assert_eq!(sv_at(-5.0, -5.0), (0.0, 1.0));
+        assert_eq!(sv_at(1e9, 1e9), (1.0, 0.0));
+    }
+
+    #[test]
+    fn hsl_matches_known_colors() {
+        assert_eq!(rgb_to_hsl(Color::rgb(255, 0, 0)), (0, 100, 50));
+        assert_eq!(rgb_to_hsl(Color::rgb(0, 255, 0)), (120, 100, 50));
+        assert_eq!(rgb_to_hsl(Color::rgb(0, 0, 255)), (240, 100, 50));
+        assert_eq!(rgb_to_hsl(Color::WHITE), (0, 0, 100));
+        assert_eq!(rgb_to_hsl(Color::BLACK), (0, 0, 0));
+        assert_eq!(rgb_to_hsl(Color::rgb(128, 128, 128)), (0, 0, 50));
+    }
 }
 
 /// Also useful for keyboard access and deterministic previewing.
@@ -767,11 +1165,12 @@ pub fn command(arguments: &[String]) -> String {
         Some("media") => show(Popup::Media),
         Some("volume") => show(Popup::Volume),
         Some("brightness") => show(Popup::Brightness),
+        Some("color") => show(Popup::Color),
         Some("hide") => {
             dismiss();
             pointer_presence(false);
         }
-        _ => return String::from("usage: popup calendar|media|volume|brightness|hide"),
+        _ => return String::from("usage: popup calendar|media|volume|brightness|color|hide"),
     }
     String::from("ok")
 }

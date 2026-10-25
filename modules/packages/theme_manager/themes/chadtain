@@ -1,6 +1,6 @@
 # chadtain theme
 VARIANT=dark
-WALLPAPER=none
+WALLPAPER=/home/chilly/Pictures/walls/warm/2024-03-31-190917_hyprshot.webp
 
 # base_16
 BASE00=#131C19

@@ -1,9 +1,0 @@
-/home/chilly/flakes/modules/packages/amane/amane/target/debug/deps/data_url-693edfc180fe71f8.d: /home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/lib.rs /home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/forgiving_base64.rs /home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/mime.rs
-
-/home/chilly/flakes/modules/packages/amane/amane/target/debug/deps/libdata_url-693edfc180fe71f8.rlib: /home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/lib.rs /home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/forgiving_base64.rs /home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/mime.rs
-
-/home/chilly/flakes/modules/packages/amane/amane/target/debug/deps/libdata_url-693edfc180fe71f8.rmeta: /home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/lib.rs /home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/forgiving_base64.rs /home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/mime.rs
-
-/home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/lib.rs:
-/home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/forgiving_base64.rs:
-/home/chilly/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/data-url-0.3.2/src/mime.rs:

@@ -32,7 +32,7 @@
         # An absolute string such as
         #     "/home/<you>/flakes/modules/packages/theme_manager/themes"
         # links the live folder instead, so edits apply immediately.
-        themesDir = ./themes;
+        themesDir = "/home/chilly/flakes/modules/packages/theme_manager/themes";
         # ------------------------------------------------------------------
 
         src = inputs.theme_manager;

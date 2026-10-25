@@ -2,7 +2,8 @@
 use super::*;
 use std::collections::BTreeMap;
 const STEP: f32 = 56.0;
-const RUBBER: f32 = 54.0;
+const RUBBER: f32 = 120.0;
+const SPRING_TENSION: f32 = 0.15;
 struct Position {
     target: f32,
     maximum: f32,
@@ -36,9 +37,9 @@ impl Service for Scrolling {
 }
 fn resisted(value: f32, max: f32) -> f32 {
     if value < 0.0 {
-        -RUBBER * (1.0 - (-value / RUBBER).exp())
+        -RUBBER * (1.0 - (-value * SPRING_TENSION / RUBBER).exp())
     } else if value > max {
-        max + RUBBER * (1.0 - (-(value - max) / RUBBER).exp())
+        max + RUBBER * (1.0 - (-(value - max) * SPRING_TENSION / RUBBER).exp())
     } else {
         value
     }
@@ -118,7 +119,7 @@ pub(super) fn view(
         height
     };
     let ty = if max > 0.0 {
-        offset.clamp(0.0, max) / max * (height - thumb)
+        offset / max * (height - thumb)
     } else {
         0.0
     };
@@ -128,11 +129,6 @@ pub(super) fn view(
         (offset - max).max(0.0)
     };
     let visible_thumb = (thumb - overshoot * 0.4).max(18.0).min(height);
-    let ty = if offset > max {
-        height - visible_thumb
-    } else {
-        ty
-    };
     let mut children: Vec<Box<dyn amane::Widget>> = children![
         Rectangle::new()
             .width(width - 18.0)
@@ -142,6 +138,55 @@ pub(super) fn view(
     ];
     // Full-height hit track makes click-to-position and drag continuous, even
     // when the thumb itself moves between input frames.
+    let _track = Rectangle::new()
+        .width(14.0)
+        .height(height)
+        .translate(width - 14.0, 0.0)
+        .cursor(if max > 0.0 {
+            amane::Grab
+        } else {
+            amane::Default
+        })
+        .on_drag(move |point| {
+            if max > 0.0 {
+                seek(id, point.y, max, height, thumb)
+            }
+        });
+    let thumb_rect = Rectangle::new()
+        .width(6.0)
+        .height(visible_thumb)
+        .translate(4.0, ty)
+        .radius(Full)
+        .fill(crate::theme::palette().cyan)
+        .cursor(if max > 0.0 {
+            amane::Grab
+        } else {
+            amane::Default
+        })
+        .on_drag(move |point| {
+            if max > 0.0 {
+                seek(id, point.y + ty, max, height, thumb)
+            }
+        });
+    let track_visual = amane::Stack::new(if max > 0.0 {
+        children![
+            Rectangle::new()
+                .width(2.0)
+                .height(height)
+                .translate(6.0, 0.0)
+                .radius(Full)
+                .fill(blend_color(
+                    crate::theme::palette().blue,
+                    Color::BLACK,
+                    0.82
+                )),
+            thumb_rect,
+        ]
+    } else {
+        children![]
+    })
+    .width(14.0)
+    .height(height);
     children.push(Box::new(
         Rectangle::new()
             .width(14.0)
@@ -158,33 +203,9 @@ pub(super) fn view(
                 }
             })
             .child(
-                // Plain solid fills, and nothing at all when there is nothing to
-                // scroll: a gradient forces a window-sized vector pass per frame,
-                // and opacity 0 forces a window-sized offscreen canvas.
-                amane::Stack::new(if max > 0.0 {
-                    children![
-                        Rectangle::new()
-                            .width(2.0)
-                            .height(height)
-                            .translate(6.0, 0.0)
-                            .radius(Full)
-                            .fill(blend_color(
-                                crate::theme::palette().blue,
-                                Color::BLACK,
-                                0.82
-                            )),
-                        Rectangle::new()
-                            .width(6.0)
-                            .height(visible_thumb)
-                            .translate(4.0, ty)
-                            .radius(Full)
-                            .fill(crate::theme::palette().cyan)
-                    ]
-                } else {
-                    children![]
-                })
-                .width(14.0)
-                .height(height),
+                amane::Stack::new(children![track_visual])
+                    .width(14.0)
+                    .height(height),
             ),
     ));
     Rectangle::new()

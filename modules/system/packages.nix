@@ -9,6 +9,9 @@
                 python3
                 unzip
                 zip
+                file
+                killall
+                nix-sweep
 
                 tree-sitter
                 vscode-langservers-extracted
@@ -24,6 +27,7 @@
                 eslint_d
                 astro-language-server
                 typescript
+                typescript-language-server
                 pyright
                 nixfmt
 
@@ -33,6 +37,14 @@
                 opencode
                 wev
                 bubblewrap
+                bibata-cursors
+
+                caido-desktop
+                ungoogled-chromium
+                appimage-run
+                steam-run
+
+                llama-cpp-cuda
         ];
     };
 }

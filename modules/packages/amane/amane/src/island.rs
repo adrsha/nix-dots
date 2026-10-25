@@ -453,13 +453,7 @@ pub fn view() -> LayerWindow {
             Mode::Osd => content.child(osd(&island)),
             Mode::Panel => content.child(modules::view(&island, &clock, content_width, height)),
         };
-        // Blur only during replacement. The trailing transparent rectangle blurs
-        // the content already drawn in this group, not the desktop behind it.
-        let blur = if opacity < 0.995 {
-            (1.0 - opacity) * 5.0
-        } else {
-            0.0
-        };
+        let blur = 0.0;
         let content = amane::Stack::new(children![
             content,
             Rectangle::new()
@@ -791,6 +785,19 @@ pub fn toggle(arguments: &[String]) -> String {
     "ok".into()
 }
 
+/// Tucks the island away so the colour picker's capture sees the desktop, not
+/// the shell. The reveal sensor and IPC still bring it back afterwards.
+pub fn hide_for_picker() {
+    popups::dismiss();
+    settings::close();
+    let mut island = Island::write();
+    island.expanded = false;
+    island.leave_deadline = None;
+    island.osd_until = Instant::now();
+    island.sync();
+    exposure::hide();
+}
+
 fn adjust(control: Osd, direction: &str) {
     let arguments = [direction.to_string()];
     match control {
@@ -822,6 +829,33 @@ fn control_color(control: Osd) -> Color {
     }
 }
 
+// Third control: opens the HSV color-picker popup next to volume/brightness.
+fn palette_icon() -> Rectangle {
+    let key = "control:palette";
+    Rectangle::new()
+        .width(CONTROL_WIDTH)
+        .height(36.0)
+        .scale(crate::feedback::scale(key))
+        .radius(Full)
+        .fill(crate::theme::surface())
+        .align_child(Center, Center)
+        .cursor(Pointer)
+        .on_hover(|entered| popups::hover(popups::Popup::Color, entered))
+        .on_click(move |button| {
+            if matches!(button, Button::Left) {
+                crate::feedback::click(key);
+                popups::show(popups::Popup::Color);
+            }
+        })
+        .child(
+            Text::new("\u{e40a}") // palette
+                .font("Material Icons Round")
+                .size(23.0)
+                .weight(Weight::Bold)
+                .color(crate::theme::palette().cyan),
+        )
+}
+
 fn volume_glyph(level: u8, muted: bool) -> &'static str {
     match (muted, level) {
         (true, _) => "\u{e04f}",
@@ -849,7 +883,7 @@ fn control_icon(control: Osd, muted: bool, selected: bool) -> Rectangle {
         .fill(if selected {
             crate::theme::palette().surface
         } else {
-            Color::BLACK
+            crate::theme::surface()
         })
         .align_child(Center, Center)
         .cursor(Pointer)

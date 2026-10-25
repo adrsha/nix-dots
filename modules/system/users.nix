@@ -2,7 +2,7 @@
     flake.nixosModules.users = { pkgs, ... }: {
         users.users.chilly = {
             isNormalUser = true;
-            extraGroups = [ "wheel" ];
+            extraGroups = [ "wheel" "docker" ];
             shell = pkgs.zsh;
             home = "/home/chilly";
             packages = with pkgs; [ lsd fd fzf ripgrep igrep ];
@@ -12,7 +12,7 @@
             users = [ "chilly" ];
             commands = [{ command = "ALL"; options = [ "NOPASSWD" ]; }];
         }];
-
-        security.polkit.enable = true;
+        
+        virtualisation.docker.enable = true;
     };
 }

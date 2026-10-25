@@ -3,6 +3,7 @@ mod ddc;
 mod edge_activation;
 mod feedback;
 mod island;
+mod picker;
 mod theme;
 
 use amane::App;
@@ -19,8 +20,10 @@ fn main() {
         .ipc("popup", island::popups::command)
         .ipc("settings", island::settings::command)
         .ipc("auxiliary", auxiliary::command)
+        .ipc("picker", picker::command)
         .ipc("edge", edge_activation::command)
         .window(island::view)
         .window(auxiliary::view)
+        .window(picker::view)
         .run();
 }

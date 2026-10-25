@@ -85,7 +85,7 @@ pub(super) fn view() -> Row {
                 Box::new(
                     Rectangle::new()
                         .width(slim + 10.0 * t)
-                        .height(23.0 + 3.0 * t)
+                        .height(23.0)
                         .scale(crate::feedback::scale(&key))
                         .radius(Full)
                         .fill(icon_gradient(tint))
