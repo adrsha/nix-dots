@@ -1,0 +1,24 @@
+# Matugen-inspired theme: the palette is generated from the wallpaper at runtime.
+#
+# theme-manager only fills colors that this file omits, so the BASE00-BASE0F
+# and named accent keys are intentionally left out — they are regenerated
+# whenever the wallpaper changes (pick one in amane's wallpaper panel, or set
+# WALLPAPER below). Only static overrides are declared here.
+
+VARIANT=dark
+TRANSPARENT=1
+MODE=dynamic
+WALLPAPER=/home/chilly/Pictures/walls/vibrant/purple.jpeg
+
+# Material 3 scheme passed to `matugen image --type`. Options:
+# content, expressive, fidelity, fruit-salad, monochrome, neutral, rainbow,
+# tonal-spot, vibrant, smart. Try `rainbow` or `expressive` for more color.
+MATUGEN_SCHEME=tonal-spot
+
+# amane reads LIGHT_GREY for secondary text. The generated value can be too
+# dim on some wallpapers, so keep a neutral that reads on both backgrounds.
+# LIGHT_GREY=#A8A8A8
+
+# Geometry is static (not sampled from the wallpaper).
+CORNER_RADIUS=10
+BORDER_SIZE=0

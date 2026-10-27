@@ -1,0 +1,563 @@
+diff --git a/src/island/exposure.rs b/src/island/exposure.rs
+--- a/src/island/exposure.rs
++++ b/src/island/exposure.rs
+@@ -13,6 +13,8 @@
+ struct Exposure {
+     revealed: bool,
+     forced_hidden: bool,
++    // Hidden for a screen capture; applies even on an empty workspace.
++    capture_hidden: bool,
+     deadline: Option<Instant>,
+     slide: Spring,
+     target: bool,
+@@ -22,6 +24,7 @@
+         Self {
+             revealed: false,
+             forced_hidden: false,
++            capture_hidden: false,
+             deadline: None,
+             slide: Spring::slow(0.0, 2.2),
+             target: false,
+@@ -32,12 +35,18 @@
+     }
+     fn update(&mut self) -> bool {
+         let occupied = occupied();
++        // A hide asked for while windows were open must not outlive them: an
++        // empty workspace always shows the island, and the next window gets
++        // the normal auto-hide rather than a stale manual one.
++        if !occupied {
++            self.forced_hidden = false;
++        }
+         if self.deadline.is_some_and(|d| Instant::now() >= d) {
+             self.revealed = false;
+             self.deadline = None;
+         }
+         let target = visibility::should_tuck(
+-            self.forced_hidden,
++            visibility::forced(self.forced_hidden, self.capture_hidden, occupied),
+             occupied,
+             self.revealed,
+             can_hide(),
+@@ -59,9 +68,10 @@
+ }
+ pub(super) fn tucked() -> bool {
+     let s = Exposure::read();
++    let occupied = occupied();
+     visibility::should_tuck(
+-        s.forced_hidden,
+-        occupied(),
++        visibility::forced(s.forced_hidden, s.capture_hidden, occupied),
++        occupied,
+         s.revealed,
+         can_hide(),
+         visibility::auto_hide(),
+@@ -73,6 +83,7 @@
+ pub(super) fn reveal() {
+     let mut s = Exposure::write();
+     s.forced_hidden = false;
++    s.capture_hidden = false;
+     s.revealed = true;
+     s.deadline = Some(Instant::now() + Duration::from_millis(3500));
+ }
+@@ -80,6 +91,7 @@
+     let mut s = Exposure::write();
+     if inside {
+         s.forced_hidden = false;
++        s.capture_hidden = false;
+         s.revealed = true;
+         s.deadline = None;
+     } else {
+@@ -93,3 +105,11 @@
+     s.revealed = false;
+     s.deadline = None;
+ }
++
++/// Hides the island for a screen capture, even on an empty workspace.
++pub(super) fn hide_for_capture() {
++    let mut s = Exposure::write();
++    s.capture_hidden = true;
++    s.revealed = false;
++    s.deadline = None;
++}
+diff --git a/src/island/settings.rs b/src/island/settings.rs
+--- a/src/island/settings.rs
++++ b/src/island/settings.rs
+@@ -2143,15 +2143,56 @@
+     .child(Row::new(contents).gap(10.0).align(Center))
+ }
+ 
++const WALL_ROW_H: f32 = 58.0;
++const WALL_ROW_GAP: f32 = 6.0;
++const WALL_VIEW_H: f32 = WALL_HERO_H + 39.0;
++
++/// Range of gallery rows worth building for a scroll offset: the viewport plus
++/// a margin of two rows each way so fast scrolling never shows a spacer.
++fn wall_visible_rows(count: usize, offset: f32) -> (usize, usize) {
++    let pitch = WALL_ROW_H + WALL_ROW_GAP;
++    let margin = 2.0 * pitch;
++    let first = ((offset - margin).max(0.0) / pitch).floor() as usize;
++    let last = (((offset + WALL_VIEW_H + margin) / pitch).ceil() as usize).min(count);
++    (first.min(count), last.max(first.min(count)))
++}
++
++/// Height of a run of `rows` skipped rows, including the gap that the
++/// surrounding column adds next to the spacer.
++fn wall_spacer_height(rows: usize) -> f32 {
++    (rows as f32 * (WALL_ROW_H + WALL_ROW_GAP) - WALL_ROW_GAP).max(0.0)
++}
++
+ /// The scannable wallpaper list beside the featured preview.
+ fn wallpaper_gallery(s: &Settings, width: f32, active: &str) -> Column {
+     let indices = wall_indices(s);
+     let mut rows: Vec<Box<dyn Widget>> = vec![];
+-    for index in &indices {
++    // Rows have a fixed pitch, so only the ones near the viewport are built;
++    // the rest are two spacers. Building every row (thumbnail lookup plus text
++    // layout) on each scroll frame is what made the gallery stutter.
++    let (first, last) = wall_visible_rows(
++        indices.len(),
++        settings_scroll::offset("wall-gallery-scroll"),
++    );
++    if first > 0 {
++        rows.push(Box::new(
++            Rectangle::new()
++                .width(width - 8.0)
++                .height(wall_spacer_height(first)),
++        ));
++    }
++    for index in &indices[first..last] {
+         rows.push(Box::new(wallpaper_gallery_row(
+             s, *index, width, active,
+         )));
+     }
++    if last < indices.len() {
++        rows.push(Box::new(
++            Rectangle::new()
++                .width(width - 8.0)
++                .height(wall_spacer_height(indices.len() - last)),
++        ));
++    }
+     let list: Box<dyn Widget> = if rows.is_empty() {
+         Box::new(
+             Rectangle::new()
+@@ -2179,9 +2220,9 @@
+     } else {
+         Box::new(settings_scroll::view_plain(
+             "wall-gallery-scroll",
+-            Column::new(rows).width(width - 8.0).gap(6.0),
++            Column::new(rows).width(width - 8.0).gap(WALL_ROW_GAP),
+             width,
+-            WALL_HERO_H + 39.0,
++            WALL_VIEW_H,
+         ))
+     };
+     let heading = Row::new(children![
+@@ -3099,6 +3140,27 @@
+ 
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    fn gallery_builds_only_rows_near_the_viewport() {
++        use super::{wall_spacer_height, wall_visible_rows, WALL_VIEW_H};
++        // everything fits: all rows real, no spacers
++        assert_eq!(wall_visible_rows(3, 0.0), (0, 3));
++        assert_eq!(wall_visible_rows(0, 0.0), (0, 0));
++        // long list at the top builds a window, not all 200
++        let (a, b) = wall_visible_rows(200, 0.0);
++        assert_eq!(a, 0);
++        assert!(b < 15 && b as f32 * 64.0 > WALL_VIEW_H);
++        // scrolled to the very end the last row is real
++        let end = 200.0 * 64.0 - 6.0 - WALL_VIEW_H;
++        let (a, b) = wall_visible_rows(200, end);
++        assert_eq!(b, 200);
++        assert!(a > 150);
++        // spacers plus rows add up to the full content height
++        let n = 200usize;
++        let rows = (b - a) as f32 * 58.0 + (b - a - 1) as f32 * 6.0;
++        let total = wall_spacer_height(a) + 6.0 + rows + 0.0;
++        assert_eq!(total, n as f32 * 64.0 - 6.0);
++    }
+     use super::*;
+     #[test]
+     fn sidebar_budgets_fit_single_page() {
+diff --git a/src/island/settings_scroll.rs b/src/island/settings_scroll.rs
+--- a/src/island/settings_scroll.rs
++++ b/src/island/settings_scroll.rs
+@@ -1,93 +1,141 @@
+ //! Settings-only scroll physics, composed from ordinary clipped rectangles.
++//!
++//! Motion is an exponential ease toward a target that is always inside the
++//! content. It never overshoots, so the first and last rows stay fully
++//! reachable and nothing bounces at an edge.
+ use super::*;
+ use std::collections::BTreeMap;
++
++/// Pixels moved by one wheel notch (touchpads report fractions of it).
+ const STEP: f32 = 72.0;
+-const RUBBER: f32 = 140.0;
+-const SPRING_TENSION: f32 = 0.12;
++/// Ease rate in 1/s. The remaining distance shrinks by e^-RATE each second,
++/// roughly 70 ms per e-fold, which reads as smooth rather than laggy.
++const RATE: f32 = 14.0;
++/// Below this distance (px) the motion snaps to its target and stops asking
++/// for frames.
++const SETTLED: f32 = 0.25;
++
+ struct Position {
+     target: f32,
+     maximum: f32,
+-    motion: Spring,
+-    release: Option<Instant>,
++    /// Offset when the current motion began, and when it began.
++    from: f32,
++    started: Instant,
++}
++
++impl Position {
++    fn at_rest(value: f32, maximum: f32) -> Self {
++        Self {
++            target: value,
++            maximum,
++            from: value,
++            started: Instant::now(),
++        }
++    }
++
++    /// Offset `elapsed` after the motion began, always within the content.
++    fn sample(&self, elapsed: Duration) -> f32 {
++        let remaining = (self.from - self.target) * (-RATE * elapsed.as_secs_f32()).exp();
++        let value = if remaining.abs() < SETTLED {
++            self.target
++        } else {
++            self.target + remaining
++        };
++        value.clamp(0.0, self.maximum)
++    }
++
++    fn moving(&self) -> bool {
++        self.sample(self.started.elapsed()) != self.target
++    }
++
++    fn now(&self) -> f32 {
++        self.sample(self.started.elapsed())
++    }
++
++    /// Aim at a new target from wherever the motion currently is, so a new
++    /// wheel notch continues smoothly instead of restarting.
++    fn aim(&mut self, target: f32) {
++        self.from = self.now();
++        self.started = Instant::now();
++        self.target = target.clamp(0.0, self.maximum);
++    }
++
++    /// Jump straight to a value (scrollbar dragging follows the pointer).
++    fn jump(&mut self, value: f32) {
++        self.target = value.clamp(0.0, self.maximum);
++        self.from = self.target;
++        self.started = Instant::now();
++    }
++
++    fn resize(&mut self, maximum: f32) {
++        if self.maximum != maximum {
++            let current = self.now();
++            self.maximum = maximum;
++            self.from = current.clamp(0.0, maximum);
++            self.started = Instant::now();
++            self.target = self.target.clamp(0.0, maximum);
++        }
++    }
+ }
++
+ struct Scrolling {
+     pages: BTreeMap<&'static str, Position>,
+ }
++
+ impl Service for Scrolling {
+     fn new() -> Self {
+         Self {
+             pages: BTreeMap::new(),
+         }
+     }
+-    fn interval() -> Duration {
+-        Duration::from_millis(16)
+-    }
+-    fn update(&mut self) -> bool {
+-        let mut changed = false;
+-        for p in self.pages.values_mut() {
+-            if p.release.is_some_and(|t| Instant::now() >= t) {
+-                p.release = None;
+-                p.target = p.target.clamp(0.0, p.maximum);
+-                p.motion.to(p.target);
+-                changed = true;
+-            }
+-        }
+-        changed
+-    }
+-}
+-fn resisted(value: f32, max: f32) -> f32 {
+-    if value < 0.0 {
+-        -RUBBER * (1.0 - (-value * SPRING_TENSION / RUBBER).exp())
+-    } else if value > max {
+-        max + RUBBER * (1.0 - (-(value - max) * SPRING_TENSION / RUBBER).exp())
+-    } else {
+-        value
+-    }
++    // Changes only through input and sampling during draws; nothing to poll.
++    fn listen() {}
+ }
++
+ fn wheel(id: &'static str, delta: f32, max: f32) {
+     if delta == 0.0 || !delta.is_finite() {
+         return;
+     }
+     let mut s = Scrolling::write();
+-    let p = s.pages.entry(id).or_insert_with(|| Position {
+-        target: 0.0,
+-        maximum: max,
+-        motion: Spring::slow(0.0, 0.7),
+-        release: None,
+-    });
+-    if p.maximum != max {
+-        p.target = p.target.clamp(0.0, max);
+-    }
+-    p.maximum = max;
+-    p.target = resisted(p.target + delta * STEP, max);
+-    p.motion.to(p.target);
+-    p.release = Some(Instant::now() + Duration::from_millis(110));
++    let p = s.pages.entry(id).or_insert_with(|| Position::at_rest(0.0, max));
++    p.resize(max);
++    // Accumulate on the target, not the animated position, so fast
++    // consecutive notches add up instead of cancelling each other.
++    p.aim(p.target + delta * STEP);
+ }
++
+ fn track_value(y: f32, max: f32, height: f32, thumb: f32) -> f32 {
+     ((y - thumb / 2.0) / (height - thumb).max(1.0)).clamp(0.0, 1.0) * max
+ }
++
+ fn seek(id: &'static str, y: f32, max: f32, height: f32, thumb: f32) {
+     let value = track_value(y, max, height, thumb);
+     let mut s = Scrolling::write();
+-    let p = s.pages.entry(id).or_insert_with(|| Position {
+-        target: 0.0,
+-        maximum: max,
+-        motion: Spring::new(0.0),
+-        release: None,
+-    });
+-    p.maximum = max;
+-    p.target = value;
+-    p.motion.to(value);
+-    p.release = Some(Instant::now() + Duration::from_millis(80));
++    let p = s.pages.entry(id).or_insert_with(|| Position::at_rest(0.0, max));
++    p.resize(max);
++    p.jump(value);
+ }
++
++/// Sampled offset of a page for the current frame, asking for another frame
++/// while it is still moving.
++fn sampled(id: &'static str, max: f32) -> f32 {
++    let state = Scrolling::read();
++    let Some(p) = state.pages.get(id) else {
++        return 0.0;
++    };
++    let value = p.now().clamp(0.0, max);
++    if p.moving() {
++        amane::request_frame();
++    }
++    value
++}
++
+ /// Current scroll offset of a page, for callers that only build what is visible.
+ pub(super) fn offset(id: &'static str) -> f32 {
+-    Scrolling::read()
+-        .pages
+-        .get(id)
+-        .map(|p| p.motion.precise_value().max(0.0))
+-        .unwrap_or(0.0)
++    let state = Scrolling::read();
++    state.pages.get(id).map(|p| p.now().max(0.0)).unwrap_or(0.0)
+ }
++
+ pub(super) fn view(
+     id: &'static str,
+     content: impl amane::Widget + 'static,
+@@ -120,20 +168,7 @@
+         _ => height,
+     };
+     let max = (content_h - height).max(0.0);
+-    let state = Scrolling::read();
+-    let offset = state
+-        .pages
+-        .get(id)
+-        .map(|p| {
+-            let sampled = p.motion.precise_value();
+-            if p.maximum != max {
+-                sampled.clamp(0.0, max)
+-            } else {
+-                sampled
+-            }
+-        })
+-        .unwrap_or(0.0);
+-    drop(state);
++    let offset = sampled(id, max);
+     let content_width = if rail { width - 20.0 } else { width };
+     let mut children: Vec<Box<dyn amane::Widget>> = children![
+         Rectangle::new()
+@@ -153,12 +188,7 @@
+         } else {
+             0.0
+         };
+-        let overshoot = if offset < 0.0 {
+-            -offset
+-        } else {
+-            (offset - max).max(0.0)
+-        };
+-        let visible_thumb = (thumb - overshoot * 0.25).max(24.0).min(height);
++        let visible_thumb = thumb;
+         let track_x = width - 12.0;
+         let thumb_rect = Rectangle::new()
+             .width(6.0)
+@@ -218,38 +248,65 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    fn page(from: f32, target: f32, maximum: f32) -> Position {
++        Position {
++            from,
++            target,
++            maximum,
++            started: Instant::now(),
++        }
++    }
++
+     #[test]
+-    fn rubber_band_is_bounded_and_bidirectional() {
+-        assert!(resisted(-1000.0, 100.0) >= -RUBBER);
+-        assert!(resisted(1000.0, 100.0) <= 100.0 + RUBBER);
+-        assert_eq!(resisted(50.0, 100.0), 50.0);
++    fn step_is_larger_than_the_library_default() {
+         assert!(STEP > 15.0 * 3.0);
+     }
++
++    #[test]
++    fn motion_never_leaves_the_content() {
++        let p = page(0.0, 500.0, 500.0);
++        let mut previous = 0.0;
++        for ms in 0..=1500 {
++            let v = p.sample(Duration::from_millis(ms));
++            assert!((0.0..=500.0).contains(&v), "left the content at {ms} ms: {v}");
++            assert!(v >= previous, "moved backwards at {ms} ms");
++            previous = v;
++        }
++        assert_eq!(p.sample(Duration::from_millis(1500)), 500.0);
++    }
++
++    #[test]
++    fn wheel_past_the_end_stops_at_the_end() {
++        let mut p = page(0.0, 0.0, 100.0);
++        p.aim(10_000.0);
++        assert_eq!(p.target, 100.0);
++        p.aim(-10_000.0);
++        assert_eq!(p.target, 0.0);
++    }
++
++    #[test]
++    fn retargeting_keeps_position_continuous() {
++        let mut p = page(0.0, 400.0, 1000.0);
++        p.started = Instant::now() - Duration::from_millis(60);
++        let before = p.now();
++        p.aim(800.0);
++        assert!((p.now() - before).abs() < 1.0);
++        assert!(p.now() > 0.0 && p.now() < 400.0);
++    }
++
++    #[test]
++    fn shrinking_content_clamps_without_a_jump_past_the_edge() {
++        let mut p = page(300.0, 300.0, 1000.0);
++        p.resize(200.0);
++        assert!(p.now() <= 200.0);
++        assert_eq!(p.target, 200.0);
++    }
++
+     #[test]
+     fn scrollbar_maps_track_to_content() {
+         assert_eq!(track_value(-10.0, 1000.0, 400.0, 80.0), 0.0);
+         assert_eq!(track_value(200.0, 1000.0, 400.0, 80.0), 500.0);
+         assert_eq!(track_value(800.0, 1000.0, 400.0, 80.0), 1000.0);
+     }
+-    #[test]
+-    fn overscroll_returns_to_endpoint() {
+-        let mut s = Scrolling::new();
+-        s.pages.insert(
+-            "test",
+-            Position {
+-                target: -40.0,
+-                maximum: 500.0,
+-                motion: Spring::new(-40.0),
+-                release: Some(Instant::now() - Duration::from_millis(1)),
+-            },
+-        );
+-        assert!(s.update());
+-        assert_eq!(s.pages["test"].target, 0.0);
+-        assert!(s.pages["test"].release.is_none());
+-    }
+-    #[test]
+-    fn upper_lower_bounds_are_continuous() {
+-        assert_eq!(resisted(0.0, 100.0), 0.0);
+-        assert_eq!(resisted(100.0, 100.0), 100.0);
+-    }
+ }
+diff --git a/src/island/visibility.rs b/src/island/visibility.rs
+--- a/src/island/visibility.rs
++++ b/src/island/visibility.rs
+@@ -69,6 +69,12 @@
+     let mut p = Preferences::write();
+     p.over_fullscreen = !p.over_fullscreen;
+ }
++/// A manual hide only means something while a window is on the workspace; an
++/// empty workspace always shows the island. A capture hide (colour picker)
++/// must hide it regardless, so the desktop can be sampled.
++pub(super) fn forced(manual: bool, capture: bool, occupied: bool) -> bool {
++    capture || (manual && occupied)
++}
+ pub(super) fn should_tuck(
+     forced: bool,
+     occupied: bool,
+@@ -94,6 +100,24 @@
+         assert!(p.over_fullscreen);
+     }
+     #[test]
++    fn empty_workspace_never_stays_hidden() {
++        // manual hide (click outside, toggle) is ignored with no windows
++        assert!(!forced(true, false, false));
++        assert!(!should_tuck(forced(true, false, false), false, false, true, true));
++        // with a window it still hides, with or without auto-hide
++        assert!(should_tuck(forced(true, false, true), true, true, true, false));
++        // empty workspace, auto-hide on, collapsed: stays visible
++        assert!(!should_tuck(false, false, false, true, true));
++        // the picker can still hide it anywhere
++        assert!(should_tuck(forced(false, true, false), false, false, true, true));
++    }
++    #[test]
++    fn occupied_workspace_still_auto_hides_only_when_collapsed() {
++        assert!(should_tuck(false, true, false, true, true));
++        assert!(!should_tuck(false, true, false, false, true));
++        assert!(!should_tuck(false, true, true, true, true));
++    }
++    #[test]
+     fn ipc_hide_remains_possible_without_auto_hide() {
+         assert!(should_tuck(true, true, true, true, false));
+         assert!(!should_tuck(false, true, false, true, false));
+diff --git a/src/island.rs b/src/island.rs
+--- a/src/island.rs
++++ b/src/island.rs
+@@ -795,7 +795,7 @@
+     island.leave_deadline = None;
+     island.osd_until = Instant::now();
+     island.sync();
+-    exposure::hide();
++    exposure::hide_for_capture();
+ }
+ 
+ fn adjust(control: Osd, direction: &str) {

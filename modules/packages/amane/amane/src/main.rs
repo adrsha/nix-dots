@@ -5,6 +5,7 @@ mod feedback;
 mod island;
 mod picker;
 mod theme;
+mod wallpaper;
 
 use amane::App;
 

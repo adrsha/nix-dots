@@ -1,6 +1,6 @@
 //! In-island vertical settings, with independent accordion sections.
 use super::*;
-use amane::{Bluetooth, Network, ScrollArea, TextInput, Widget};
+use amane::{Bluetooth, Network, TextInput, Widget};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::{fs, path::PathBuf, process::Command};
@@ -27,6 +27,8 @@ struct Settings {
     status: String,
     theme_busy: bool,
     themes: Vec<Theme>,
+    /// When the theme cards were last rescanned, so dynamic palettes refresh.
+    themes_at: Instant,
     /// Theme currently opened in the editor.
     editing_theme: Option<String>,
     /// One entry per KEY=VALUE line of the edited theme, in file order.
@@ -38,6 +40,21 @@ struct Settings {
     /// Sidebar category filter; "all" shows every folder.
     wallpaper_filter: String,
 }
+/// Material 3 schemes accepted by theme-manager's `MATUGEN_SCHEME`, matching
+/// matugen's `--type` values. Used for dynamic themes only.
+const MATUGEN_SCHEMES: [&str; 10] = [
+    "content",
+    "expressive",
+    "fidelity",
+    "fruit-salad",
+    "monochrome",
+    "neutral",
+    "rainbow",
+    "tonal-spot",
+    "vibrant",
+    "smart",
+];
+
 /// A media file from the wallpapers directory.
 #[derive(Clone)]
 struct WallItem {
@@ -57,7 +74,7 @@ struct EditorField {
     value: String,
     id: &'static str,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Theme {
     name: String,
     colors: Vec<Color>,
@@ -83,6 +100,7 @@ impl Service for Settings {
             status: String::new(),
             theme_busy: false,
             themes: themes(),
+            themes_at: Instant::now(),
             editing_theme: None,
             editor: vec![],
             wallpapers: wallpapers(),
@@ -103,8 +121,19 @@ impl Service for Settings {
             0.0
         };
         self.motion.to(target);
-        let changed = self.target_height != target;
+        let mut changed = self.target_height != target;
         self.target_height = target;
+        // Dynamic palettes are regenerated from the wallpaper at runtime, so
+        // refresh the cards while the panel is open to keep their previews in
+        // sync with active.json.
+        if self.open && self.themes_at.elapsed() >= Duration::from_millis(700) {
+            self.themes_at = Instant::now();
+            let next = themes();
+            if next != self.themes {
+                self.themes = next;
+                changed = true;
+            }
+        }
         changed
     }
 }
@@ -269,30 +298,30 @@ fn contents(s: &Settings) -> Column {
             if i > 0 {
                 separated.push(Box::new(
                     Rectangle::new()
-                        .width(card_width - 48.0)
+                        .width(card_width - 64.0)
                         .height(1.0)
-                        .fill(blend_color(
-                            crate::theme::palette().blue,
-                            Color::BLACK,
-                            0.75,
-                        )),
+                        .fill(crate::theme::palette().raised),
                 ) as Box<dyn Widget>);
-                y += 15.0;
+                y += 16.0;
             }
             if y + height >= near_top && y <= near_bottom {
                 separated.push(Box::new(notices::history_card(entry, card_width)));
             } else {
                 separated.push(Box::new(Rectangle::new().width(card_width).height(height)));
             }
-            y += height + 14.0;
+            y += height + 16.0;
         }
         if separated.is_empty() {
             separated.push(Box::new(label("No saved notifications yet.")));
         }
         rows.push(Box::new(
-            Column::new(separated).width(panel - 48.0).gap(14.0),
+            Column::new(separated).width(panel - 48.0).gap(16.0),
         ));
-        rows.push(Box::new(button("Clear history", 140.0, history::clear)));
+        rows.push(Box::new(
+            Row::new(children![button("Clear history", 140.0, history::clear)])
+                .width(panel - 48.0)
+                .justify(End),
+        ));
     }
     if s.sections[1] {
         rows.extend(network_page(s, &net, panel - 48.0));
@@ -301,9 +330,11 @@ fn contents(s: &Settings) -> Column {
         rows.extend(bluetooth_page(&bt, panel - 48.0));
     }
     if s.sections[3] {
-        rows.push(Box::new(
-            label("Background").size(17.0).weight(Weight::SemiBold),
-        ));
+        rows.push(Box::new(section_label(
+            "Background",
+            "Display & theme behavior",
+            panel - 48.0,
+        )));
         rows.push(Box::new(amoled_switch(panel - 48.0, false)));
         rows.push(Box::new(amoled_switch(panel - 48.0, true)));
 
@@ -318,11 +349,20 @@ fn contents(s: &Settings) -> Column {
         )));
         rows.push(Box::new(wallpaper_section(s, panel - 48.0)));
 
-        rows.push(Box::new(
-            label("Main island visibility")
-                .size(17.0)
-                .weight(Weight::SemiBold),
-        ));
+        if let Some(current) = active_matugen_scheme() {
+            rows.push(Box::new(section_label(
+                "Matugen scheme",
+                "Material 3 palette from the current wallpaper",
+                panel - 48.0,
+            )));
+            rows.push(Box::new(matugen_scheme_picker(current, panel - 48.0)));
+        }
+
+        rows.push(Box::new(section_label(
+            "Main island visibility",
+            "Control when the island appears",
+            panel - 48.0,
+        )));
         rows.push(Box::new(visibility_switch(false, panel - 48.0)));
         rows.push(Box::new(visibility_switch(true, panel - 48.0)));
         let note = label("Independent permissions. IPC can still hide or reveal the island.")
@@ -335,9 +375,11 @@ fn contents(s: &Settings) -> Column {
             Rectangle::new().width(panel - 48.0).height(nh).child(note),
         ));
 
-        rows.push(Box::new(
-            label("Edge activation").size(17.0).weight(Weight::SemiBold),
-        ));
+        rows.push(Box::new(section_label(
+            "Edge activation",
+            "Reveal by touching screen edges",
+            panel - 48.0,
+        )));
         rows.push(Box::new(
             label("Reveal each island by touching its screen edge.")
                 .size(13.0)
@@ -555,6 +597,11 @@ fn themes() -> Vec<Theme> {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
         })
         .join("theme-manager/themes");
+    // Dynamic themes have no static palette in the file; their colors only
+    // exist once resolved. For the active one, use the published snapshot so
+    // its card follows wallpaper changes at runtime.
+    let current = crate::theme::current_name();
+    let active = active_theme_colors();
     let mut themes = vec![];
     if let Ok(list) = fs::read_dir(dir) {
         for entry in list.flatten() {
@@ -568,20 +615,52 @@ fn themes() -> Vec<Theme> {
             let Ok(text) = fs::read_to_string(entry.path()) else {
                 continue;
             };
-            let colors = ["BASE00", "BLUE", "GREEN", "PURPLE", "YELLOW"]
-                .iter()
-                .filter_map(|key| {
-                    text.lines()
-                        .filter_map(|l| l.split_once('='))
-                        .find(|(k, _)| k.trim() == *key)
-                        .and_then(|(_, v)| parse_hex(v.trim()))
-                })
-                .collect();
+            let dynamic = text.lines().any(|line| {
+                line.split_once('=')
+                    .is_some_and(|(key, value)| key.trim() == "MODE" && value.trim() == "dynamic")
+            });
+            let colors = if dynamic && name == current {
+                active.clone().unwrap_or_else(|| theme_colors(&text))
+            } else {
+                theme_colors(&text)
+            };
             themes.push(Theme { name, colors });
         }
     }
     themes.sort_by(|a, b| a.name.cmp(&b.name));
     themes
+}
+
+/// The preview swatches for a theme file.
+fn theme_colors(text: &str) -> Vec<Color> {
+    ["BASE00", "BLUE", "GREEN", "PURPLE", "YELLOW"]
+        .iter()
+        .filter_map(|key| {
+            text.lines()
+                .filter_map(|line| line.split_once('='))
+                .find(|(candidate, _)| candidate.trim() == *key)
+                .and_then(|(_, value)| parse_hex(value.trim()))
+        })
+        .collect()
+}
+
+/// Preview swatches from the resolved palette of the active theme.
+fn active_theme_colors() -> Option<Vec<Color>> {
+    let path = PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+        .join(".local/state/theme/active.json");
+    let text = fs::read_to_string(path).ok()?;
+    let colors = text.split_once("\"colors\"")?.1;
+    let colors = colors.split('}').next().unwrap_or("");
+    let parsed: Vec<Color> = ["BASE00", "BLUE", "GREEN", "PURPLE", "YELLOW"]
+        .iter()
+        .filter_map(|key| {
+            colors
+                .split_once(&format!("\"{key}\""))
+                .and_then(|(_, tail)| tail.split_once(':'))
+                .and_then(|(_, value)| parse_hex(value.trim().trim_start_matches('"')))
+        })
+        .collect();
+    (!parsed.is_empty()).then_some(parsed)
 }
 fn parse_hex(s: &str) -> Option<Color> {
     let rgb = u32::from_str_radix(s.strip_prefix('#')?.get(..6)?, 16).ok()?;
@@ -1307,20 +1386,7 @@ fn store_bin(prefix: &str, tail: &str) -> Option<PathBuf> {
 /// The raw WALLPAPER value recorded by the theme daemon ("none" until a wall
 /// has been applied or a theme declares one).
 fn active_wallpaper() -> String {
-    let path = PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-        .join(".local/state/theme/active.json");
-    let text = fs::read_to_string(path).unwrap_or_default();
-    text.split_once("\"WALLPAPER\"")
-        .and_then(|(_, tail)| tail.split_once(':'))
-        .map(|(_, v)| {
-            v.trim_start()
-                .trim_start_matches('"')
-                .split('"')
-                .next()
-                .unwrap_or("")
-        })
-        .unwrap_or("")
-        .to_string()
+    crate::wallpaper::active()
 }
 
 /// Carousel start position; the slide that matches the applied wallpaper.
@@ -1347,10 +1413,10 @@ fn active_wallpaper_index(walls: &[WallItem]) -> usize {
         .unwrap_or(0)
 }
 
-/// Sets the current theme's WALLPAPER variable (or clears it), re-applies the
-/// theme, and repaints directly: awww for stills, mpvpaper for videos. Dynamic
-/// palettes are regenerated by theme-set from the new image.
-fn set_wallpaper(image: Option<String>, video: bool) {
+/// Sets the current theme's WALLPAPER variable (or clears it) and re-applies
+/// the theme. theme-manager's daemon regenerates the dynamic palette and owns
+/// the actual repaint (awww/mpvpaper), so Amane only records the selection.
+fn set_wallpaper(image: Option<String>) {
     std::thread::spawn(move || {
         let theme = crate::theme::current_name();
         if theme.is_empty() {
@@ -1358,32 +1424,23 @@ fn set_wallpaper(image: Option<String>, video: bool) {
             s.status = "No active theme — apply one first.".into();
             return;
         }
+        let clearing = image.is_none();
         {
             let mut s = Settings::write();
             if s.theme_busy {
                 return;
             }
             s.theme_busy = true;
-            s.status = format!("Switching wallpaper for {theme}…");
+            s.status = if clearing {
+                format!("Removing wallpaper from {theme}…")
+            } else {
+                format!("Switching wallpaper for {theme}…")
+            };
         }
         let value = image.as_deref().unwrap_or("none");
         let file = theme_file(&theme);
         let original = fs::read_to_string(&file).unwrap_or_default();
-        let mut out = String::new();
-        let mut replaced = false;
-        for line in original.lines() {
-            let key = line.split('=').next().map(str::trim).unwrap_or("");
-            if key == "WALLPAPER" {
-                out.push_str(&format!("WALLPAPER={value}\n"));
-                replaced = true;
-            } else {
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
-        if !replaced {
-            out.push_str(&format!("WALLPAPER={value}\n"));
-        }
+        let out = upsert_theme_value(&original, "WALLPAPER", value);
         // Dual write: the theme-set-visible copy and the live file, both
         // updated with the new WALLPAPER so theme-set always sees it.
         let mut wrote_any = false;
@@ -1406,19 +1463,25 @@ fn set_wallpaper(image: Option<String>, video: bool) {
         {
             let mut s = Settings::write();
             s.themes = themes();
-            if failures.is_empty() {
-                s.status = format!("Wallpaper saved — running theme-set for {theme}…");
+            let saved = if clearing {
+                "Wallpaper removed from theme"
             } else {
-                s.status = format!(
-                    "Wallpaper saved ({} failed) — running theme-set for {theme}…",
+                "Wallpaper saved"
+            };
+            s.status = if failures.is_empty() {
+                format!("{saved} — running theme-set for {theme}…")
+            } else {
+                format!(
+                    "{saved} ({} failed) — running theme-set for {theme}…",
                     failures.join("; ")
-                );
-            }
+                )
+            };
         }
-        // Synchronous apply: theme-set regenerates every config, then awww
-        // paints the image — the pinned theme-manager paints its wallpaper via
-        // Quickshell, which is absent on this machine, so the repaint is ours.
-        let mut notes: Vec<String> = vec![];
+        let mut notes: Vec<String> = vec![if clearing {
+            "Wallpaper removed from theme; theme-manager will clear the backdrop.".to_string()
+        } else {
+            "Wallpaper saved; theme-manager will repaint.".to_string()
+        }];
         match Command::new("theme-set").arg(&theme).output() {
             Ok(o) if o.status.success() => {
                 note_theme_applied(&theme, &mut notes);
@@ -1432,7 +1495,6 @@ fn set_wallpaper(image: Option<String>, video: bool) {
             )),
             Err(e) => notes.push(format!("Cannot launch theme-set: {e}")),
         }
-        notes.push(paint_wallpaper(image.as_deref(), video));
         let mut s = Settings::write();
         s.status = notes.join(" ");
         s.theme_busy = false;
@@ -1452,74 +1514,6 @@ fn note_theme_applied(theme: &str, notes: &mut Vec<String>) {
     notes.push(format!(
         "theme-set requested {theme}, but theme-daemon has not confirmed it."
     ));
-}
-
-/// Paints (or clears) the wallpaper — replacing the dead Quickshell path of
-/// the pinned theme-manager: awww paints stills, mpvpaper plays videos.
-fn paint_wallpaper(image: Option<&str>, video: bool) -> String {
-    match image {
-        Some(file) if video => {
-            kill_quiet("awww-daemon");
-            match Command::new("mpvpaper")
-                .args(["-o", "loop", "ALL"])
-                .arg(file)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
-                Ok(_) => "Video playing with mpvpaper.".into(),
-                Err(_) => {
-                    "mpvpaper is not installed yet — rebuild the system to add it.".into()
-                }
-            }
-        }
-        Some(file) => {
-            kill_quiet("mpvpaper");
-            let running = Command::new("awww")
-                .arg("query")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            if !running {
-                let daemon = Command::new("awww-daemon")
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
-                if daemon.is_err() {
-                    return "awww-daemon could not start.".into();
-                }
-                std::thread::sleep(Duration::from_millis(600));
-            }
-            match Command::new("awww").arg("img").arg(file).output() {
-                Ok(o) if o.status.success() => "Painted with awww.".into(),
-                Ok(o) => format!(
-                    "awww img failed: {}",
-                    String::from_utf8_lossy(&o.stderr)
-                        .chars()
-                        .take(120)
-                        .collect::<String>()
-                ),
-                Err(e) => format!("awww unavailable: {e}"),
-            }
-        }
-        None => {
-            kill_quiet("mpvpaper");
-            kill_quiet("awww-daemon");
-            "Wallpaper stopped (backdrop only).".into()
-        }
-    }
-}
-
-/// Terminates a process best-effort, silencing "no process found" noise.
-fn kill_quiet(name: &str) {
-    let _ = Command::new("killall")
-        .args([name, "--quiet"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
 }
 
 fn wallpaper_root() -> PathBuf {
@@ -1608,10 +1602,11 @@ fn remove_wallpaper(index: usize) {
         let out = Command::new("gio")
             .args(["trash", "--", &item.path])
             .output();
+        let trashed = matches!(&out, Ok(o) if o.status.success());
         let status = match out {
             Ok(o) if o.status.success() => {
                 let hint = if was_active {
-                    " It was active — apply another one to repaint."
+                    " It was active — clearing it from the theme."
                 } else {
                     ""
                 };
@@ -1630,15 +1625,22 @@ fn remove_wallpaper(index: usize) {
             ),
             Err(e) => format!("Could not trash {}: {e}", item.name),
         };
-        let mut s = Settings::write();
-        s.wallpapers = wallpapers();
-        let count = s.wallpapers.len();
-        s.wallpaper_index = s.wallpaper_index.min(count.saturating_sub(1));
-        let indices = wall_indices(&s);
-        if !indices.contains(&s.wallpaper_index) {
-            s.wallpaper_index = indices.first().copied().unwrap_or(0);
+        {
+            let mut s = Settings::write();
+            s.wallpapers = wallpapers();
+            let count = s.wallpapers.len();
+            s.wallpaper_index = s.wallpaper_index.min(count.saturating_sub(1));
+            let indices = wall_indices(&s);
+            if !indices.contains(&s.wallpaper_index) {
+                s.wallpaper_index = indices.first().copied().unwrap_or(0);
+            }
+            s.status = status;
         }
-        s.status = status;
+        if was_active && trashed {
+            // The theme still points at the trashed file. Clear it through the
+            // theme file so theme-manager, not amane, removes the backdrop.
+            set_wallpaper(None);
+        }
     });
 }
 
@@ -1755,13 +1757,21 @@ fn wallpaper_chip_label(label: &str, count: usize) -> String {
     format!("{label}  {count}")
 }
 
-fn wallpaper_chip_width(text: &str) -> f32 {
+fn chip_text_width(text: &str) -> f32 {
     let content = Text::new(text).size(11.0);
-    let width = match Widget::width(&content) {
+    match Widget::width(&content) {
         amane::Size::Fixed(width) => width,
         _ => text.chars().count() as f32 * 6.8,
-    };
-    (width + 22.0).clamp(56.0, 176.0)
+    }
+}
+
+fn wallpaper_chip_width(text: &str) -> f32 {
+    (chip_text_width(text) + 22.0).clamp(56.0, 176.0)
+}
+
+/// Scheme pills hug their label instead of sharing the filter chips' minimum.
+fn matugen_scheme_width(scheme: &str) -> f32 {
+    chip_text_width(scheme) + 20.0
 }
 
 /// A folder/category filter chip. `filter` is the value stored in settings,
@@ -1949,7 +1959,7 @@ fn wallpaper_hero(s: &Settings, width: f32, active: &str) -> Column {
         preview = preview.cursor(Pointer).on_click(move |b| {
             if b == Button::Left {
                 crate::feedback::click(&ck);
-                set_wallpaper(Some(item.path.clone()), item.video);
+                set_wallpaper(Some(item.path.clone()));
             }
         });
     }
@@ -1971,13 +1981,13 @@ fn wallpaper_hero(s: &Settings, width: f32, active: &str) -> Column {
                 "Apply wallpaper"
             };
             actions.push(Box::new(wallpaper_primary(label, width, move || {
-                set_wallpaper(Some(apply.path.clone()), apply.video);
+                set_wallpaper(Some(apply.path.clone()));
             })));
             let remove_index = index;
             actions.push(Box::new(
                 Row::new(children![
-                    wallpaper_link("Stop wallpaper", settings_secondary(), || {
-                        set_wallpaper(None, false)
+                    wallpaper_link("Remove from theme", settings_secondary(), || {
+                        set_wallpaper(None)
                     }),
                     wallpaper_link(
                         "Remove file",
@@ -2007,8 +2017,8 @@ fn wallpaper_hero(s: &Settings, width: f32, active: &str) -> Column {
                         crate::theme::palette().cyan,
                         refresh_wallpapers
                     ),
-                    wallpaper_link("Stop wallpaper", settings_secondary(), || {
-                        set_wallpaper(None, false)
+                    wallpaper_link("Remove from theme", settings_secondary(), || {
+                        set_wallpaper(None)
                     }),
                 ])
                 .gap(14.0)
@@ -2167,14 +2177,12 @@ fn wallpaper_gallery(s: &Settings, width: f32, active: &str) -> Column {
                 ),
         )
     } else {
-        Box::new(
-            ScrollArea::new(
-                "wall-gallery-scroll",
-                Column::new(rows).width(width - 8.0).gap(6.0),
-            )
-            .width(width)
-            .height(WALL_HERO_H + 39.0),
-        )
+        Box::new(settings_scroll::view_plain(
+            "wall-gallery-scroll",
+            Column::new(rows).width(width - 8.0).gap(6.0),
+            width,
+            WALL_HERO_H + 39.0,
+        ))
     };
     let heading = Row::new(children![
         Column::new(children![
@@ -2274,6 +2282,198 @@ fn wallpaper_section(s: &Settings, width: f32) -> Column {
         Row::new(parts).gap(14.0).align(Start)
     ])
     .gap(12.0)
+}
+
+/// The active theme's `MATUGEN_SCHEME`, when the theme is dynamic.
+/// Outer `None` means the theme does not use dynamic colors; inner `None`
+/// means it resolved dynamic colors without matugen.
+fn active_matugen_scheme() -> Option<Option<String>> {
+    let theme = crate::theme::current_name();
+    if theme.is_empty() {
+        return None;
+    }
+    let text = fs::read_to_string(theme_file(&theme)).ok()?;
+    let mut dynamic = false;
+    let mut scheme = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "MODE" if value.trim() == "dynamic" => dynamic = true,
+            "MATUGEN_SCHEME" => scheme = Some(value.trim().to_string()),
+            _ => {}
+        }
+    }
+    dynamic.then_some(scheme)
+}
+
+/// A scheme chip. Selecting it writes MATUGEN_SCHEME into the active theme and
+/// asks theme-manager to regenerate the palette from the current wallpaper.
+fn matugen_scheme_chip(scheme: &str, active: bool) -> Rectangle {
+    let scheme = scheme.to_string();
+    let key = format!("matugen-scheme:{scheme}");
+    let ck = key.clone();
+    let width = matugen_scheme_width(&scheme);
+    let accent = crate::theme::palette().blue;
+    let fill = if active {
+        blend_color(accent, crate::theme::background(), 0.14)
+    } else {
+        setting_surface()
+    };
+    let color = if active {
+        crate::theme::readable(crate::theme::background(), fill, 4.5)
+    } else {
+        settings_foreground()
+    };
+    let content = Text::new(scheme.clone())
+        .size(11.0)
+        .weight(if active {
+            Weight::SemiBold
+        } else {
+            Weight::Regular
+        })
+        .color(color)
+        .elide();
+    Rectangle::new()
+        .width(width)
+        .height(28.0)
+        .radius(14.0)
+        .fill(fill)
+        .cursor(Pointer)
+        .scale(crate::feedback::scale(&ck))
+        .on_click(move |b| {
+            if b == Button::Left {
+                crate::feedback::click(&ck);
+                set_matugen_scheme(scheme.clone());
+            }
+        })
+        .align_child(Center, Center)
+        .child(
+            Rectangle::new()
+                .width(width - 14.0)
+                .height(17.0)
+                .align_child(Center, Center)
+                .child(content),
+        )
+}
+
+fn matugen_scheme_picker(current: Option<String>, width: f32) -> Column {
+    let mut chip_rows: Vec<Box<dyn Widget>> = vec![];
+    let mut row: Vec<Box<dyn Widget>> = vec![];
+    let mut row_width = 0.0;
+    for scheme in MATUGEN_SCHEMES {
+        let chip_width = matugen_scheme_width(scheme);
+        if !row.is_empty() && row_width + 6.0 + chip_width > width {
+            chip_rows.push(Box::new(Row::new(row).gap(6.0)));
+            row = vec![];
+            row_width = 0.0;
+        }
+        if !row.is_empty() {
+            row_width += 6.0;
+        }
+        row.push(Box::new(matugen_scheme_chip(
+            scheme,
+            current.as_deref() == Some(scheme),
+        )));
+        row_width += chip_width;
+    }
+    if !row.is_empty() {
+        chip_rows.push(Box::new(Row::new(row).gap(6.0)));
+    }
+    Column::new(chip_rows).gap(6.0)
+}
+
+/// Replace (or append) one KEY=VALUE line without disturbing comments or the
+/// rest of the theme file.
+fn upsert_theme_value(original: &str, key: &str, value: &str) -> String {
+    let mut out = String::new();
+    let mut replaced = false;
+    for line in original.lines() {
+        if line.split('=').next().map(str::trim) == Some(key) {
+            out.push_str(&format!("{key}={value}\n"));
+            replaced = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !replaced {
+        out.push_str(&format!("{key}={value}\n"));
+    }
+    out
+}
+
+/// Writes MATUGEN_SCHEME into the active theme and re-applies it, letting
+/// theme-manager regenerate the Material 3 palette from the wallpaper.
+fn set_matugen_scheme(scheme: String) {
+    std::thread::spawn(move || {
+        let theme = crate::theme::current_name();
+        if theme.is_empty() {
+            let mut s = Settings::write();
+            s.status = "No active theme — apply one first.".into();
+            return;
+        }
+        {
+            let mut s = Settings::write();
+            if s.theme_busy {
+                return;
+            }
+            s.theme_busy = true;
+            s.status = format!("Applying matugen {scheme} to {theme}…");
+        }
+        let file = theme_file(&theme);
+        let original = fs::read_to_string(&file).unwrap_or_default();
+        let out = upsert_theme_value(&original, "MATUGEN_SCHEME", &scheme);
+        let mut wrote_any = false;
+        let mut failures: Vec<String> = vec![];
+        for target in theme_write_targets(&theme) {
+            match fs::write(&target, &out) {
+                Ok(()) => wrote_any = true,
+                Err(e) => failures.push(format!("{} ({e})", target.display())),
+            }
+        }
+        if !wrote_any {
+            let mut s = Settings::write();
+            s.status = format!(
+                "Could not write {theme}: {}; theme files are only writable when themesDir links a live folder.",
+                failures.join("; ")
+            );
+            s.theme_busy = false;
+            return;
+        }
+        {
+            let mut s = Settings::write();
+            s.themes = themes();
+            s.status = if failures.is_empty() {
+                format!("Matugen scheme saved — regenerating {theme}…")
+            } else {
+                format!(
+                    "Matugen scheme saved ({} failed) — regenerating {theme}…",
+                    failures.join("; ")
+                )
+            };
+        }
+        let mut notes: Vec<String> = vec![format!("Matugen scheme set to {scheme}.")];
+        match Command::new("theme-set").arg(&theme).output() {
+            Ok(o) if o.status.success() => note_theme_applied(&theme, &mut notes),
+            Ok(o) => notes.push(format!(
+                "theme-set failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+                    .chars()
+                    .take(120)
+                    .collect::<String>()
+            )),
+            Err(e) => notes.push(format!("Cannot launch theme-set: {e}")),
+        }
+        let mut s = Settings::write();
+        s.status = notes.join(" ");
+        s.theme_busy = false;
+    });
 }
 
 fn section_label(title: &str, detail: &str, width: f32) -> Row {

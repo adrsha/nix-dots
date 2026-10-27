@@ -516,7 +516,7 @@ fn calendar(state: &Hover) -> Column {
                     .fill(if current {
                         crate::theme::palette().blue
                     } else {
-                        Color::BLACK
+                        crate::theme::surface()
                     })
                     .align_child(Center, Center)
                     .child(
@@ -524,7 +524,7 @@ fn calendar(state: &Hover) -> Column {
                             .size(15.0)
                             .weight(Weight::SemiBold)
                             .color(if current {
-                                Color::BLACK
+                                crate::theme::palette().background
                             } else {
                                 crate::theme::palette().foreground
                             }),

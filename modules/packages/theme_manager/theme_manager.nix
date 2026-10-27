@@ -67,7 +67,10 @@
             cargoLock.lockFile = "${src}/Cargo.lock";
             doCheck = false;
             nativeBuildInputs = [ pkgs.makeWrapper ];
-            # ffmpeg: MODE=dynamic (palette from the wallpaper).
+            # matugen: MATUGEN_SCHEME Material palettes.
+            # ffmpeg: fallback MODE=dynamic palette extraction and video frames.
+            # awww / mpvpaper: the daemon owns still and video wallpapers.
+            # procps: pgrep/pkill for wallpaper process reconciliation.
             # dconf + glib: gsettings/dconf binaries, which are not on a bare
             #   NixOS PATH. Suffix keeps the system PATH first.
             # GIO_EXTRA_MODULES / XDG_DATA_DIRS: make GSettings persist to dconf
@@ -76,7 +79,7 @@
             postInstall = ''
                 for b in theme-set theme-daemon; do
                     wrapProgram $out/bin/$b \
-                        --suffix PATH : ${lib.makeBinPath [ pkgs.ffmpeg pkgs.dconf pkgs.glib ]} \
+                        --suffix PATH : ${lib.makeBinPath [ pkgs.matugen pkgs.ffmpeg pkgs.awww pkgs.mpvpaper pkgs.procps pkgs.dconf pkgs.glib ]} \
                         --set GIO_EXTRA_MODULES ${dconfModules} \
                         --suffix XDG_DATA_DIRS : ${schemaDir}
                 done
@@ -133,6 +136,7 @@
             theme-manager
             pkgs.matugen
             pkgs.awww
+            pkgs.mpvpaper
             # Handy for debugging and manual runs: `dconf read/watch`, `gsettings`.
             pkgs.dconf
             pkgs.glib

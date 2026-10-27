@@ -604,8 +604,9 @@ pub(super) fn history_card(entry: &history::Entry, width: f32) -> Rectangle {
     Rectangle::new()
         .width(width)
         .height(h)
-        .radius(24.0)
-        .fill(crate::theme::background())
+        .radius(20.0)
+        .fill(crate::theme::surface())
+        .border(1.0, crate::theme::palette().raised)
         .padding(PADDING)
         .on_click(move |b| {
             if b == Button::Left {

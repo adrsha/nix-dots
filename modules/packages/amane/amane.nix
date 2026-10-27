@@ -8,7 +8,7 @@
     {
         environment.systemPackages = [
             (inputs.amane.packages.${pkgs.stdenv.hostPlatform.system}.default.overrideAttrs (old: {
-                patches = (old.patches or []) ++ [ ./amane/src/patches/ctrl-search-keys.patch ./amane/src/patches/scrolled-hitboxes.patch ./amane/src/patches/optimized-shell.patch ./amane/src/patches/pulse-drop-order.patch ];
+                patches = (old.patches or []) ++ [ ./amane/src/patches/ctrl-search-keys.patch ./amane/src/patches/scrolled-hitboxes.patch ./amane/src/patches/optimized-shell.patch ./amane/src/patches/pulse-drop-order.patch ./amane/src/patches/refresh-cursor.patch ];
             }))
             pkgs.ddcutil
             pkgs.libnotify
@@ -20,11 +20,11 @@
             pkgs.swaylock
             pkgs.xdg-utils
             pkgs.python3
-            # Wallpaper media support: ffmpeg decodes webp/gif/video thumbnails,
-            # imagemagick falls back for webp/gif, mpvpaper plays video walls.
+            # Wallpaper thumbnails: ffmpeg decodes webp/gif/video stills and
+            # imagemagick falls back for webp/gif. Playback belongs to
+            # theme-manager's daemon (mpvpaper is provided there).
             pkgs.ffmpeg
             pkgs.imagemagick
-            pkgs.mpvpaper
         ];
 
         hardware.i2c.enable = true;
